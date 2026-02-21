@@ -2,11 +2,12 @@
 
 ## 1. Visao geral
 
-A aplicacao usa Nuxt 4 com tres camadas principais:
+A aplicacao usa Nuxt 4 com quatro camadas principais:
 
 - Frontend (`app/`): UI mobile-first e fluxo de cadastro.
 - Persistencia local (`IndexedDB`): operacao offline imediata no celular.
-- Backend (`server/api` + Mongo): sincronizacao opcional e integracao externa de placa/FIPE.
+- Backend Node.js (`server/api` + Mongo): sincronizacao opcional e integracao externa de placa/FIPE.
+- Backend Python (`flask/`): API Flask para futura integração.
 
 ## 2. Estrutura de pastas
 
@@ -35,6 +36,11 @@ server/
     auctionCarsRepo.ts
   utils/
     mongo.ts
+
+flask/                    # Backend Python
+  app.py                  # API Flask
+  config.py
+  requirements.txt
 ```
 
 ## 3. Colecao dedicada
@@ -49,11 +55,37 @@ server/
 2. UI calcula margem em tempo real usando `shared/valuation.ts`.
 3. Registro e salvo em `IndexedDB` (`useIndexedAuctionCars`).
 4. Quando houver internet e backend configurado, UI sincroniza via `POST /api/v1/auction-cars`.
-5. Consulta placa/FIPE acontece via `POST /api/v1/plate-fipe/lookup` com placa informada manualmente.
+5. Consulta placa/FIPE acontece via `POST /api/v1/plate-fipe/lookup`.
 
 ## 5. Decisoes tecnicas
 
 - Calculo no cliente: reduz latencia no patio e permite decisao imediata.
 - IndexedDB: evita perda de dados em campo sem conectividade.
 - `shared/valuation.ts`: mesma regra de margem no front e backend.
+- **Flask**: API Python simples e leve para futuras integrações.
+- **Supervisor**: gerencia múltiplos processos (Nuxt + Flask) em um único container Docker (produção).
 - Fallback mock da API de placa/FIPE: nao bloqueia prototipo enquanto credenciais reais nao estiverem disponiveis.
+
+## 6. Infraestrutura
+
+### Desenvolvimento Local
+
+Execute em terminais separados:
+
+```bash
+# Terminal 1: Nuxt
+pnpm dev
+
+# Terminal 2: Flask
+pnpm service:flask
+```
+
+### Produção (Docker)
+
+A aplicação roda em containers Docker orquestrados via docker-compose:
+
+- **app**: Container principal com Nuxt (porta 3000) e Flask (porta 5000)
+- **mongo**: MongoDB para persistência (porta 27017)
+- **redis**: Redis para filas/cache (porta 16379)
+
+Processos no container `app` são gerenciados por `supervisord`.

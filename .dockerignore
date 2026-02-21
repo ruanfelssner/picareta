@@ -1,0 +1,63 @@
+# Dependências
+node_modules
+.pnpm-store
+
+# Build outputs
+.output
+.nuxt
+dist
+build
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+*.egg-info/
+.pytest_cache/
+
+# Logs
+*.log
+logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Git
+.git
+.gitignore
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Testes
+coverage/
+.nyc_output/
+
+# Docs (opcional, remover se quiser incluir)
+docs/
+
+# README
+README.md
+AGENTS.md
+
+# Docker
+docker-compose*.yml
+Dockerfile*

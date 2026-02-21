@@ -9,7 +9,7 @@
     "preview": "nuxt preview",
     "postinstall": "nuxt prepare",
     "start:web": "node .output/server/index.mjs",
-    "start:worker": "tsx server/jobs/publish-worker.ts",
+    "service:flask": "cd flask && python app.py",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "format": "prettier --write \"**/*.{js,ts,vue,json,md}\""
