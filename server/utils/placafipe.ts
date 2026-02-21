@@ -143,17 +143,49 @@ const isCloudflareBlock = (html: string) => {
 export async function fetchPlacafipeByPlate(plate: string, timeout = 12000) {
   const url = `https://placafipe.com/placa/${encodeURIComponent(plate)}`
 
-  const response = await $fetch.raw<string>(url, {
-    method: 'GET',
-    responseType: 'text',
-    timeout,
-    headers: {
-      'user-agent':
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-      accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-      'accept-language': 'pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7',
-    },
-  })
+  const runtimeConfig = useRuntimeConfig()
+  const cfClearance = String(runtimeConfig.placaFipeCfClearance || '').trim()
+
+  let response
+  try {
+    response = await $fetch.raw<string>(url, {
+      method: 'GET',
+      responseType: 'text',
+      timeout,
+      headers: {
+        'user-agent':
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36',
+        accept:
+          'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+        'accept-language': 'en,pt-BR;q=0.9,pt;q=0.8,es;q=0.7,en-US;q=0.6,und;q=0.5',
+        'cache-control': 'no-cache',
+        pragma: 'no-cache',
+        referer: 'https://placafipe.com/',
+        origin: 'https://placafipe.com',
+        'upgrade-insecure-requests': '1',
+        priority: 'u=0, i',
+        'sec-ch-ua': '"Not:A-Brand";v="99", "Google Chrome";v="145", "Chromium";v="145"',
+        'sec-ch-ua-mobile': '?0',
+        'sec-ch-ua-platform': '"Windows"',
+        'sec-fetch-dest': 'document',
+        'sec-fetch-mode': 'navigate',
+        'sec-fetch-site': 'same-origin',
+        'sec-fetch-user': '?1',
+        ...(cfClearance ? { cookie: `cf_clearance=${cfClearance}` } : {}),
+      },
+    })
+  } catch (error: unknown) {
+    const statusCode = Number((error as { statusCode?: number }).statusCode || 0)
+    if (statusCode === 403) {
+      throw createError({
+        statusCode: 502,
+        statusMessage: cfClearance
+          ? 'placafipe.com bloqueou a requisicao mesmo com cf_clearance.'
+          : 'placafipe.com bloqueou a requisicao (403). Defina NUXT_PLACA_FIPE_CF_CLEARANCE com cookie valido do navegador.',
+      })
+    }
+    throw error
+  }
 
   const html = String(response._data || '')
 

@@ -27,6 +27,9 @@ O servidor estará disponível em `http://localhost:5000`
 ## Endpoints
 
 - `GET /` - Endpoint principal, retorna status da API
+- `GET /test` - Testa reconhecimento com imagem local em `data/test`
+- `POST /recognize-base64` - Reconhece placa a partir de imagem em base64
+- `POST /api/v1/plate/recognize` - Endpoint padrao para consumo direto do Nuxt
 
 **Exemplo de resposta:**
 
@@ -44,3 +47,27 @@ Via variáveis de ambiente:
 
 - `FLASK_PORT` - Porta do servidor (default: 5000)
 - `FLASK_DEBUG` - Modo debug (default: False)
+- `MAX_IMAGE_BYTES` - Limite de bytes aceito no endpoint base64 (default: 12582912)
+
+## Exemplo do endpoint base64
+
+```bash
+curl -X POST "http://localhost:5000/recognize-base64" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "filename": "nivus.jpeg",
+    "base64": "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQ..."
+  }'
+```
+
+## Exemplo (Nuxt direto)
+
+```bash
+curl -X POST "http://localhost:5000/api/v1/plate/recognize" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "requestId": "req-123",
+    "filename": "nivus.jpeg",
+    "imageBase64": "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQ..."
+  }'
+```

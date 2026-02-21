@@ -119,5 +119,16 @@ Ver [.env.example](.env.example) para todas as opções.
 Principais:
 
 - `FLASK_PORT`: Porta do serviço Flask (default: 5000)
+- `NUXT_PUBLIC_FLASK_BASE_URL`: URL base do Flask usada pelo frontend (default: http://localhost:5000)
+- `NUXT_PUBLIC_FLASK_TIMEOUT_MS`: timeout da chamada OCR Flask em ms (default: 120000)
 - `NUXT_MONGO_URI`: Connection string do MongoDB
+- `NUXT_PLACA_FIPE_BASE_URL`: base URL do provider de placa/FIPE
+- `NUXT_PLACA_FIPE_LOOKUP_PATH`: path de lookup (default: /lookup)
+- `NUXT_PLACA_FIPE_LOOKUP_METHOD`: metodo HTTP do provider (`POST` default)
+- `NUXT_PLACA_FIPE_REQUEST_PLATE_FIELD`: nome do campo enviado no body/query (`placa` default)
+- `NUXT_PLACA_FIPE_DEVICE_TOKEN`: header `DeviceToken` opcional para providers que exigem esse header
+- `NUXT_PLACA_FIPE_USER_AGENT`: user-agent da chamada ao provider
 - `NUXT_PLACA_FIPE_TOKEN`: Token da API Placa FIPE
+- `NUXT_PLACA_FIPE_TIMEOUT_MS`: timeout do lookup Placa/FIPE em ms (default: 8000)
+- `NUXT_PLACA_FIPE_LOOKUP_STRATEGY`: estrategia de consulta (`scrape-first` default, `provider-first`, `scrape-only`, `provider-only`)
+- `NUXT_PLACA_FIPE_CF_CLEARANCE`: cookie `cf_clearance` opcional para scraping quando Cloudflare bloquear

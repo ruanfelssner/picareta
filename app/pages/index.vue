@@ -29,6 +29,16 @@
       <div class="surface-card rounded-2xl p-5">
         <h2 class="text-xl font-bold text-slate-900">Foto do veículo</h2>
         <p class="mt-1 text-sm text-slate-600">Envie a foto frontal com a placa visível</p>
+        <div
+          v-if="statusMessage && statusTone !== 'ok'"
+          class="mt-3 rounded-xl px-3 py-2 text-sm font-semibold"
+          :class="{
+            'border border-amber-300 bg-amber-50 text-amber-900': statusTone === 'warn',
+            'border border-rose-300 bg-rose-50 text-rose-900': statusTone === 'error',
+          }"
+        >
+          {{ statusMessage }}
+        </div>
 
         <div class="mt-4">
           <input
@@ -87,6 +97,14 @@
                 @input="onPlateInput"
               >
             </div>
+            <button
+              class="w-full rounded-lg border border-slate-300 bg-white py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-50"
+              type="button"
+              :disabled="loadingLookup || !draft.plate"
+              @click="lookupCurrentPlate"
+            >
+              Consultar placa
+            </button>
           </div>
 
           <div v-if="ocrProcessed && ocrSuccess" class="mt-4 space-y-3 rounded-xl border border-emerald-300 bg-emerald-50 p-4">
@@ -682,23 +700,66 @@ const onPlateInput = (event: Event) => {
 }
 
 const readErrorMessage = (error: unknown) => {
+  const timeoutText = 'A leitura da imagem demorou demais (timeout). Tente foto menor/mais nítida e tente novamente.'
+
   if (error && typeof error === 'object') {
-    const maybeData = (error as { data?: { statusMessage?: string } }).data
+    const maybeData = (error as { data?: { statusMessage?: string; message?: string }; message?: string }).data
     if (maybeData?.statusMessage) return maybeData.statusMessage
+    if (maybeData?.message) return maybeData.message
+
+    const maybeMessage = String((error as { message?: string }).message || '')
+    if (maybeMessage.toLowerCase().includes('timeout')) return timeoutText
   }
 
   if (error instanceof Error && error.message) {
+    if (error.message.toLowerCase().includes('timeout')) return timeoutText
     return error.message
   }
 
   return 'Falha na operacao.'
 }
 
-const applyPlateCandidate = (candidate: string) => {
+const applyPlateCandidate = async (candidate: string) => {
   const normalized = normalizePlate(candidate)
   if (!normalized) return
   draft.plate = normalized
-  setStatus(`Placa aplicada: ${normalized}.`, 'ok')
+  setStatus(`Placa aplicada: ${normalized}. Consultando FIPE...`, 'ok')
+  await lookupVehicleByPlate(normalized)
+}
+
+const lookupVehicleByPlate = async (plate: string) => {
+  const normalizedPlate = normalizePlate(plate)
+  if (!normalizedPlate) {
+    setStatus('Informe uma placa válida para consulta.', 'warn')
+    return
+  }
+
+  loadingLookup.value = true
+  try {
+    const lookup = await api.lookupPlateAndFipe({ plate: normalizedPlate })
+    const { result, warning } = lookup
+
+    draft.brand = String(result.brand || '').trim()
+    draft.model = String(result.model || '').trim()
+    draft.year = typeof result.year === 'number' ? result.year : null
+    draft.fipeValue = Number(result.fipeValue) || 0
+
+    if (warning) {
+      setStatus(`Placa ${normalizedPlate} identificada. ${warning}`, 'warn')
+    } else if (draft.fipeValue <= 0) {
+      setStatus(`Placa ${normalizedPlate} identificada, mas sem valor FIPE no retorno.`, 'warn')
+    } else {
+      setStatus(`Placa ${normalizedPlate} consultada com sucesso.`, 'ok')
+    }
+  } catch (error) {
+    setStatus(`Placa ${normalizedPlate} identificada, mas falhou consulta FIPE: ${readErrorMessage(error)}`, 'warn')
+  } finally {
+    loadingLookup.value = false
+  }
+}
+
+const lookupCurrentPlate = async () => {
+  await lookupVehicleByPlate(draft.plate)
 }
 
 const onPhotoSelected = async (event: Event) => {
@@ -738,35 +799,35 @@ const extractPlateFromPhoto = async () => {
   try {
     const response = await api.extractPlateFromImage({
       imageBase64: draft.photoDataUrl,
+      filename: 'camera-upload',
+      requestId: createId(),
     })
 
     const { result } = response
 
-    plateCandidates.value = result.candidates || []
-    ocrBestScore.value = Number(result.bestScore) || 0
-    ocrSecondScore.value = Number(result.secondScore) || 0
+    const candidates = Array.isArray(result.candidates) ? result.candidates : []
+    const dedupedCandidates = Array.from(
+      new Set(candidates.map((item) => normalizePlate(item?.plate || '')).filter(Boolean)),
+    )
+    plateCandidates.value = dedupedCandidates
+    ocrBestScore.value = Number(candidates[0]?.confidence ?? result.confidence ?? 0)
+    ocrSecondScore.value = Number(candidates[1]?.confidence ?? 0)
     ocrProcessed.value = true
 
     if (result.plate) {
       draft.plate = normalizePlate(result.plate)
-      
-      // Simulate FIPE lookup with mock data
-      if (draft.plate) {
-        draft.brand = 'Volkswagen'
-        draft.model = 'Gol 1.0'
-        draft.year = 2018
-        draft.fipeValue = 35000
-      }
-      
       ocrSuccess.value = true
-      setStatus(`Placa identificada: ${draft.plate}`, 'ok')
+      setStatus(`Placa identificada: ${draft.plate}. Consultando FIPE...`, 'ok')
+      if (draft.plate) {
+        await lookupVehicleByPlate(draft.plate)
+      }
       return
     }
 
     ocrSuccess.value = false
-    const topCandidates = result.candidates?.slice(0, 3) || []
+    const topCandidates = dedupedCandidates.slice(0, 3)
     const candidatesHint = topCandidates.length > 0 ? ` Candidatos: ${topCandidates.join(', ')}.` : ''
-    setStatus((response.warning || 'OCR com baixa confianca.') + candidatesHint, 'warn')
+    setStatus('OCR com baixa confiança.' + candidatesHint, 'warn')
   } catch (error) {
     ocrProcessed.value = true
     ocrSuccess.value = false
