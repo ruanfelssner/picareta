@@ -107,7 +107,7 @@ export default defineEventHandler(async (event) => {
 
   if (!plate && input.imageBase64) {
     try {
-      const ocrResult = await detectPlateFromImageSmart(input.imageBase64, runtimeConfig)
+      const ocrResult = await detectPlateFromImageSmart(input.imageBase64)
       ocrBestScore = Number(ocrResult.bestScore) || 0
       ocrSecondScore = Number(ocrResult.secondScore) || 0
       const ocrMargin = ocrBestScore - ocrSecondScore

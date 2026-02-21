@@ -18,10 +18,6 @@ export default defineNuxtConfig({
     placaFipeToken: '',
     placaFipeLookupPath: '/lookup',
     placaFipeTimeoutMs: 8000,
-    plateOcrEngine: 'python',
-    plateOcrPythonBin: 'python3',
-    plateOcrPythonScript: 'server/scripts/plate_ocr.py',
-    plateOcrTimeoutMs: 15000,
     public: {
       siteUrl: 'http://localhost:3000',
       siteName: 'Picareta',

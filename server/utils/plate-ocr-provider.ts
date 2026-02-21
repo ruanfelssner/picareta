@@ -4,13 +4,6 @@ import { resolve } from 'node:path'
 import { spawn } from 'node:child_process'
 import { normalizePlate } from '@core/shared/valuation'
 
-type RuntimeOcrConfig = {
-  plateOcrEngine?: string
-  plateOcrPythonBin?: string
-  plateOcrPythonScript?: string
-  plateOcrTimeoutMs?: number
-}
-
 type OcrResult = {
   plate: string
   candidates: string[]
@@ -35,6 +28,39 @@ const toFiniteNumber = (value: unknown) => {
   return Number.isFinite(parsed) ? parsed : 0
 }
 
+type RunnerError = Error & { unavailable?: boolean }
+
+const OCR_TIMEOUT_MS = 35000
+const PYTHON_SCRIPT_PATH = resolve('server/scripts/plate_ocr.py')
+const PYTHON_BINS = process.platform === 'win32'
+  ? ['python', 'py', 'python3']
+  : ['python3', 'python']
+
+const toRunnerError = (value: unknown) => {
+  const base = value instanceof Error ? value : new Error(String(value))
+  return base as RunnerError
+}
+
+const markUnavailable = (value: unknown) => {
+  const error = toRunnerError(value)
+  error.unavailable = true
+  return error
+}
+
+const isUnavailableErrorMessage = (message: string) => {
+  const normalized = message.toLowerCase()
+  return (
+    normalized.includes('not found') ||
+    normalized.includes('no such file') ||
+    normalized.includes('is not recognized') ||
+    normalized.includes('could not be found') ||
+    normalized.includes('não foi encontrado') ||
+    normalized.includes('nao foi encontrado') ||
+    normalized.includes('python nao foi encontrado') ||
+    normalized.includes('python nÃ£o foi encontrado')
+  )
+}
+
 const normalizeOcrResult = (input: PythonOcrPayload): OcrResult => {
   const candidates = Array.isArray(input.candidates)
     ? input.candidates
@@ -56,21 +82,12 @@ const normalizeOcrResult = (input: PythonOcrPayload): OcrResult => {
   }
 }
 
-export async function detectPlateFromImageSmart(
+const runPythonOcr = async (
+  pythonBin: string,
+  scriptPath: string,
+  timeoutMs: number,
   imageBase64: string,
-  config: RuntimeOcrConfig = {},
-): Promise<OcrResult> {
-  const engine = String(config.plateOcrEngine || 'python').toLowerCase()
-  if (engine !== 'python') {
-    throw new Error(`OCR JavaScript foi removido. Use NUXT_PLATE_OCR_ENGINE=python (valor atual: ${engine}).`)
-  }
-
-  const pythonBin = String(config.plateOcrPythonBin || 'python3')
-  const scriptPath = resolve(String(config.plateOcrPythonScript || 'server/scripts/plate_ocr.py'))
-  const timeoutMs = Math.max(3000, Number(config.plateOcrTimeoutMs) || 15000)
-
-  await access(scriptPath, constants.R_OK)
-
+) => {
   const payload = JSON.stringify({ imageBase64 })
 
   const output = await new Promise<{ code: number | null; stdout: string; stderr: string }>((resolveProcess, rejectProcess) => {
@@ -105,8 +122,24 @@ export async function detectPlateFromImageSmart(
       stderr += String(chunk || '')
     })
 
+    child.stdin.on('error', (error) => {
+      const message = String(error?.message || '')
+      if (message.includes('EPIPE') || message.includes('EOF')) {
+        return
+      }
+      clearTimeout(timeout)
+      finish(() => rejectProcess(error))
+    })
+
     child.on('error', (error) => {
       clearTimeout(timeout)
+
+      const maybeErr = error as NodeJS.ErrnoException
+      if (maybeErr?.code === 'ENOENT') {
+        finish(() => rejectProcess(markUnavailable(new Error(`Python executable not found: ${pythonBin}`))))
+        return
+      }
+
       finish(() => rejectProcess(error))
     })
 
@@ -115,8 +148,14 @@ export async function detectPlateFromImageSmart(
       finish(() => resolveProcess({ code, stdout, stderr }))
     })
 
-    child.stdin.write(payload)
-    child.stdin.end()
+    child.on('spawn', () => {
+      try {
+        child.stdin.end(payload)
+      } catch (error) {
+        clearTimeout(timeout)
+        finish(() => rejectProcess(error))
+      }
+    })
   })
 
   const rawOutput = output.stdout.trim()
@@ -128,9 +167,19 @@ export async function detectPlateFromImageSmart(
   }
 
   if (output.code !== 0) {
-    const parsedError = parsed?.error || parsed?.details || ''
+    const parsedError = String(parsed?.error || '').trim()
+    const parsedDetails = String(parsed?.details || '').trim()
     const stderr = output.stderr.trim()
-    const baseMessage = parsedError || stderr || rawOutput || 'Python OCR failed.'
+    const primaryMessage = parsedDetails || stderr || rawOutput || parsedError || `Python OCR failed (${pythonBin}).`
+    const baseMessage = parsedError && parsedError !== 'ocr_failed' && parsedError !== primaryMessage
+      ? `${parsedError}: ${primaryMessage}`
+      : primaryMessage
+
+    const isUnavailable = output.code === 9009 || output.code === 127 || isUnavailableErrorMessage(baseMessage)
+    if (isUnavailable) {
+      throw markUnavailable(new Error(baseMessage))
+    }
+
     throw new Error(baseMessage)
   }
 
@@ -143,4 +192,26 @@ export async function detectPlateFromImageSmart(
   }
 
   return normalizeOcrResult(parsed)
+}
+
+export async function detectPlateFromImageSmart(
+  imageBase64: string,
+): Promise<OcrResult> {
+  await access(PYTHON_SCRIPT_PATH, constants.R_OK)
+
+  let lastError: RunnerError | null = null
+  for (const bin of PYTHON_BINS) {
+    try {
+      return await runPythonOcr(bin, PYTHON_SCRIPT_PATH, OCR_TIMEOUT_MS, imageBase64)
+    } catch (error) {
+      const runnerError = toRunnerError(error)
+      lastError = runnerError
+
+      if (!runnerError.unavailable) {
+        throw runnerError
+      }
+    }
+  }
+
+  throw lastError || new Error('Python OCR failed to start.')
 }

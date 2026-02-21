@@ -24,19 +24,6 @@
       </div>
     </div>
 
-    <!-- Status Message -->
-    <section
-      v-if="statusMessage"
-      class="mx-4 mt-4 rounded-xl border px-3 py-2 text-sm"
-      :class="{
-        'border-emerald-700/35 bg-emerald-50 text-emerald-900': statusTone === 'ok',
-        'border-amber-700/35 bg-amber-50 text-amber-900': statusTone === 'warn',
-        'border-rose-700/35 bg-rose-50 text-rose-900': statusTone === 'error',
-      }"
-    >
-      {{ statusMessage }}
-    </section>
-
     <!-- STEP 1: Foto e OCR -->
     <section v-if="currentStep === 1" class="mx-4 mt-4 space-y-4">
       <div class="surface-card rounded-2xl p-5">
@@ -692,12 +679,6 @@ const clearDraft = () => {
 const onPlateInput = (event: Event) => {
   const input = event.target as HTMLInputElement
   draft.plate = normalizePlate(input.value)
-}
-
-const onYearInput = (event: Event) => {
-  const input = event.target as HTMLInputElement
-  const rawValue = Number(input.value)
-  draft.year = Number.isFinite(rawValue) && rawValue > 0 ? rawValue : null
 }
 
 const readErrorMessage = (error: unknown) => {

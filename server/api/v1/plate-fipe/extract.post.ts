@@ -11,7 +11,6 @@ const HIGH_SCORE = 1.8
 const MIN_MARGIN = 0.6
 
 export default defineEventHandler(async (event) => {
-  const runtimeConfig = useRuntimeConfig(event)
   const body = await readBody(event)
   const parsed = requestSchema.safeParse(body)
 
@@ -25,7 +24,7 @@ export default defineEventHandler(async (event) => {
 
   let ocr
   try {
-    ocr = await detectPlateFromImageSmart(parsed.data.imageBase64, runtimeConfig)
+    ocr = await detectPlateFromImageSmart(parsed.data.imageBase64)
   } catch (error) {
     throw createError({
       statusCode: 503,
