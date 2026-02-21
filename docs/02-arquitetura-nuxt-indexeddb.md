@@ -49,7 +49,7 @@ server/
 2. UI calcula margem em tempo real usando `shared/valuation.ts`.
 3. Registro e salvo em `IndexedDB` (`useIndexedAuctionCars`).
 4. Quando houver internet e backend configurado, UI sincroniza via `POST /api/v1/auction-cars`.
-5. Consulta placa/FIPE acontece via `POST /api/v1/plate-fipe/lookup`.
+5. Consulta placa/FIPE acontece via `POST /api/v1/plate-fipe/lookup` com placa informada manualmente.
 
 ## 5. Decisoes tecnicas
 

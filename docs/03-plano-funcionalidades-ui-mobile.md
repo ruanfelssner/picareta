@@ -17,7 +17,6 @@ Colocar o app para uso real no celular, com cadastro e analise de margem em pouc
 
 ### Fase 2 - Operacao de campo
 
-- OCR real da placa a partir da imagem (provedor escolhido).
 - Enriquecimento automatico de marca/modelo/ano/FIPE.
 - Filtros locais (hoje, com lucro, abaixo da meta).
 - Indicador de status da sincronizacao por registro.

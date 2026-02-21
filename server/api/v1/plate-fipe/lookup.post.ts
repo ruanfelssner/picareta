@@ -3,24 +3,10 @@ import { z } from 'zod'
 import type { PlateLookupResult } from '@core/shared/types/auction'
 import { normalizePlate } from '@core/shared/valuation'
 import { fetchPlacafipeByPlate } from '@core/server/utils/placafipe'
-import { detectPlateFromImageSmart } from '@core/server/utils/plate-ocr-provider'
 
-const requestSchema = z
-  .object({
-    plate: z.string().optional(),
-    imageBase64: z.string().optional(),
-  })
-  .superRefine((value, context) => {
-    if (!value.plate && !value.imageBase64) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: 'Informe placa ou imagem para consulta.',
-      })
-    }
-  })
-
-const OCR_MIN_CONFIDENCE = 2.2
-const OCR_MIN_MARGIN_TO_SECOND = 0.9
+const requestSchema = z.object({
+  plate: z.string().min(1, 'Informe a placa para consulta.'),
+})
 
 const buildMock = (plate: string): PlateLookupResult => {
   const normalizedPlate = normalizePlate(plate || '')
@@ -46,7 +32,7 @@ const toNumberOrNull = (value: unknown) => {
 
 const lookupOnExternalProvider = async (
   runtimeConfig: ReturnType<typeof useRuntimeConfig>,
-  payload: { plate?: string; imageBase64?: string },
+  payload: { plate: string },
 ) => {
   if (!runtimeConfig.placaFipeBaseUrl) {
     return null
@@ -69,8 +55,7 @@ const lookupOnExternalProvider = async (
     method: 'POST',
     headers,
     body: {
-      plate: payload.plate || undefined,
-      imageBase64: payload.imageBase64 || undefined,
+      plate: payload.plate,
     },
     timeout: Number(runtimeConfig.placaFipeTimeoutMs) || 12000,
   })
@@ -97,58 +82,14 @@ export default defineEventHandler(async (event) => {
     })
   }
 
-  const input = parsed.data
   const runtimeConfig = useRuntimeConfig(event)
-  let plate = normalizePlate(input.plate || '')
-  let ocrCandidates: string[] = []
-  let ocrRawText = ''
-  let ocrBestScore = 0
-  let ocrSecondScore = 0
-
-  if (!plate && input.imageBase64) {
-    try {
-      const ocrResult = await detectPlateFromImageSmart(input.imageBase64)
-      ocrBestScore = Number(ocrResult.bestScore) || 0
-      ocrSecondScore = Number(ocrResult.secondScore) || 0
-      const ocrMargin = ocrBestScore - ocrSecondScore
-      if (ocrBestScore >= OCR_MIN_CONFIDENCE && ocrMargin >= OCR_MIN_MARGIN_TO_SECOND) {
-        plate = normalizePlate(ocrResult.plate)
-      }
-      ocrCandidates = ocrResult.candidates
-      ocrRawText = ocrResult.rawText
-    } catch (error) {
-      ocrRawText = `[ocr-python-error] ${error instanceof Error ? error.message : String(error)}`
-    }
-  }
+  const plate = normalizePlate(parsed.data.plate || '')
 
   if (!plate) {
-    let providerFailureMessage = ''
-    try {
-      const providerResult = await lookupOnExternalProvider(runtimeConfig, {
-        imageBase64: input.imageBase64,
-      })
-
-      if (providerResult) {
-        return {
-          result: providerResult,
-        }
-      }
-    } catch (error) {
-      providerFailureMessage = error instanceof Error ? error.message : String(error)
-    }
-
-    return {
-      result: buildMock(''),
-      warning:
-        'Nao foi possivel identificar a placa automaticamente. Informe a placa manualmente.' +
-        (providerFailureMessage ? ` Provedor externo: ${providerFailureMessage}` : ''),
-      data: {
-        candidates: ocrCandidates,
-        bestScore: ocrBestScore,
-        secondScore: ocrSecondScore,
-        rawText: ocrRawText,
-      },
-    }
+    throw createError({
+      statusCode: 400,
+      statusMessage: 'Informe uma placa valida para consulta.',
+    })
   }
 
   try {
@@ -170,7 +111,6 @@ export default defineEventHandler(async (event) => {
     try {
       const providerResult = await lookupOnExternalProvider(runtimeConfig, {
         plate,
-        imageBase64: input.imageBase64,
       })
 
       if (providerResult) {
@@ -187,12 +127,6 @@ export default defineEventHandler(async (event) => {
       warning:
         'Consulta externa indisponivel no momento. Resultado local de contingencia.' +
         (scrapingFailureMessage ? ` Detalhe: ${scrapingFailureMessage}` : ''),
-      data: {
-        candidates: ocrCandidates,
-        bestScore: ocrBestScore,
-        secondScore: ocrSecondScore,
-        rawText: ocrRawText,
-      },
     }
   }
 })

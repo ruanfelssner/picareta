@@ -9,9 +9,7 @@ O projeto Picareta precisa permitir avaliacao rapida de carros de leilao no celu
 - RF-01: cadastrar carro com dados basicos (placa, marca, modelo, ano, valor de compra, valor FIPE, observacoes).
 - RF-02: aceitar foto frontal do carro via camera do celular.
 - RF-03: consultar dados de placa/FIPE via API externa (quando configurada).
-- RF-03.0: no fluxo principal, a etapa inicial deve focar em OCR da placa; consulta externa de dados do veiculo nao deve disparar automaticamente no upload da foto.
-- RF-03.1: identificar automaticamente a placa a partir de foto frontal usando OCR.
-- RF-03.4: OCR de placa no backend deve usar pipeline Python (OpenCV + pytesseract), sem fallback JavaScript.
+- RF-03.1: consulta de placa/FIPE deve ocorrer por placa informada manualmente.
 - RF-03.2: consultar `https://placafipe.com/placa/{PLACA}` e extrair os campos da tabela `fipeTablePriceDetail`.
 - RF-03.3: extrair no minimo: marca, modelo, importado, ano, ano modelo, cor, cilindrada, potencia, combustivel, chassi, motor, passageiros, UF e municipio.
 - RF-04: quando API externa nao estiver configurada, manter fallback local mock para nao bloquear o fluxo.
@@ -51,4 +49,3 @@ O projeto Picareta precisa permitir avaliacao rapida de carros de leilao no celu
 
 - API Placa/FIPE (configurada por variaveis `NUXT_PLACA_FIPE_*`).
 - MongoDB opcional para sincronizacao server-side.
-- Runtime Python 3 + Tesseract OCR no ambiente de deploy (Railway/Docker).

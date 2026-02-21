@@ -24,25 +24,6 @@ pnpm dev
 
 Aplicacao local: `http://localhost:3000`
 
-## OCR de Placa (Python)
-
-- Script: `server/scripts/plate_ocr.py`
-- Binario detectado automaticamente:
-  - Windows: `python`, `py`, `python3`
-  - Linux/Docker: `python3`, `python`
-- Check rapido:
-
-```bash
-pnpm ocr:python:check
-```
-
-Se o check retornar erro de Tesseract no Windows, instale o Tesseract OCR e reinicie o terminal.
-O script tenta detectar automaticamente estes caminhos:
-- `C:\Program Files\Tesseract-OCR\tesseract.exe`
-- `C:\Program Files (x86)\Tesseract-OCR\tesseract.exe`
-
-No Docker/Railway, as dependencias Python e Tesseract sao instaladas pelo `Dockerfile`.
-
 ## Documentacao
 
 - Requisitos: `docs/01-requisitos.md`
