@@ -9,9 +9,24 @@ O projeto Picareta precisa permitir avaliacao rapida de carros de leilao no celu
 - RF-01: cadastrar carro com dados basicos (placa, marca, modelo, ano, valor de compra, valor FIPE, observacoes).
 - RF-02: aceitar foto frontal do carro via camera do celular.
 - RF-03: consultar dados de placa/FIPE via API externa (quando configurada).
+- RF-03.0: no fluxo principal, a etapa inicial deve focar em OCR da placa; consulta externa de dados do veiculo nao deve disparar automaticamente no upload da foto.
+- RF-03.1: identificar automaticamente a placa a partir de foto frontal usando OCR.
+- RF-03.4: OCR de placa no backend deve usar pipeline Python (OpenCV + pytesseract), sem fallback JavaScript.
+- RF-03.2: consultar `https://placafipe.com/placa/{PLACA}` e extrair os campos da tabela `fipeTablePriceDetail`.
+- RF-03.3: extrair no minimo: marca, modelo, importado, ano, ano modelo, cor, cilindrada, potencia, combustivel, chassi, motor, passageiros, UF e municipio.
 - RF-04: quando API externa nao estiver configurada, manter fallback local mock para nao bloquear o fluxo.
 - RF-05: cadastrar custos por item (pintura, mecanica, suspensao, vidros, portas e outros).
+- RF-05.1: fluxo de custos deve iniciar com item padrao `Leilao` no valor de `R$ 800`, mantendo edicao livre.
+- RF-05.2: novos custos devem ser adicionados por seletor (select), com opcao `Outros` abrindo campo de descricao manual.
 - RF-06: calcular em tempo real custo total, investimento total, lucro estimado e margem percentual.
+- RF-06.1: operar em fluxo direto na mesma tela, com foto e consulta no topo, custos no meio e salvar carro no final.
+- RF-06.2: usar logica reversa para estimar compra maxima no leilao: `compra maxima = FIPE - margem alvo - custos`.
+- RF-06.3: margem alvo deve ser editavel e vir predefinida por faixa FIPE:
+  - ate R$ 30.000 -> R$ 5.000
+  - ate R$ 80.000 -> R$ 10.000
+  - ate R$ 120.000 -> R$ 30.000
+  - ate R$ 160.000 -> R$ 40.000
+  - acima disso, progressao continua por faixas.
 - RF-07: permitir salvar e listar carros localmente no aparelho (IndexedDB) para uso offline.
 - RF-08: permitir reabrir e editar registros salvos localmente.
 - RF-09: sincronizar registro para API server.
@@ -36,3 +51,4 @@ O projeto Picareta precisa permitir avaliacao rapida de carros de leilao no celu
 
 - API Placa/FIPE (configurada por variaveis `NUXT_PLACA_FIPE_*`).
 - MongoDB opcional para sincronizacao server-side.
+- Runtime Python 3 + Tesseract OCR no ambiente de deploy (Railway/Docker).

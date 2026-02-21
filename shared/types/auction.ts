@@ -31,11 +31,30 @@ export interface AuctionCarRecord {
   summary: AuctionSummary
 }
 
+export interface PlateFipeDetails {
+  marca: string
+  modelo: string
+  importado: string
+  ano: number | null
+  anoModelo: number | null
+  cor: string
+  cilindrada: string
+  potencia: string
+  combustivel: string
+  chassi: string
+  motor: string
+  passageiros: number | null
+  uf: string
+  municipio: string
+  raw: Record<string, string>
+}
+
 export interface PlateLookupResult {
   plate: string
   brand: string
   model: string
   year: number | null
   fipeValue: number | null
-  source: 'placa-fipe' | 'mock'
+  source: 'placa-fipe' | 'placafipe-site' | 'mock'
+  details?: PlateFipeDetails
 }

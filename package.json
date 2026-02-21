@@ -10,6 +10,8 @@
     "postinstall": "nuxt prepare",
     "start:web": "node .output/server/index.mjs",
     "start:worker": "tsx server/jobs/publish-worker.ts",
+    "ocr:python:check": "python server/scripts/plate_ocr.py --check",
+    "ocr:python:check:linux": "python3 server/scripts/plate_ocr.py --check",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "format": "prettier --write \"**/*.{js,ts,vue,json,md}\""

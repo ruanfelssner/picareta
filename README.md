@@ -24,6 +24,18 @@ pnpm dev
 
 Aplicacao local: `http://localhost:3000`
 
+## OCR de Placa (Python)
+
+- Engine ativa: `NUXT_PLATE_OCR_ENGINE=python`
+- Script: `server/scripts/plate_ocr.py`
+- Check rapido:
+
+```bash
+pnpm ocr:python:check
+```
+
+No Docker/Railway, as dependencias Python e Tesseract sao instaladas pelo `Dockerfile`.
+
 ## Documentacao
 
 - Requisitos: `docs/01-requisitos.md`
