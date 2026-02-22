@@ -36,9 +36,15 @@ const detectIosSafari = () => {
   return ios && safari
 }
 
+const detectMobileBrowser = () => {
+  const ua = window.navigator.userAgent.toLowerCase()
+  return /android|iphone|ipad|ipod|mobile/.test(ua)
+}
+
 export const usePwaInstall = () => {
   const isModalOpen = useState<boolean>('pwa-install-modal-open', () => false)
   const isIosSafari = useState<boolean>('pwa-install-is-ios-safari', () => false)
+  const isMobileBrowser = useState<boolean>('pwa-install-is-mobile', () => false)
   const isStandalone = useState<boolean>('pwa-install-is-standalone', () => false)
   const canNativeInstall = useState<boolean>('pwa-install-can-native', () => false)
   const isPwaInstallSupported = useState<boolean>('pwa-install-supported', () => false)
@@ -47,14 +53,14 @@ export const usePwaInstall = () => {
     if (!import.meta.client) return
 
     isIosSafari.value = detectIosSafari()
+    isMobileBrowser.value = detectMobileBrowser()
     isStandalone.value = detectStandaloneMode()
     canNativeInstall.value = Boolean(deferredInstallPrompt)
-    isPwaInstallSupported.value = isIosSafari.value || canNativeInstall.value
+    isPwaInstallSupported.value = isIosSafari.value || canNativeInstall.value || isMobileBrowser.value
   }
 
   const shouldAutoOpenModal = () => {
     if (!import.meta.client) return false
-    if (!isPwaInstallSupported.value) return false
     if (isStandalone.value) return false
     if (localStorage.getItem(NEVER_ASK_KEY) === '1') return false
     return now() >= readDismissUntil()
@@ -136,6 +142,7 @@ export const usePwaInstall = () => {
   return {
     isModalOpen,
     isIosSafari,
+    isMobileBrowser,
     isStandalone,
     canNativeInstall,
     isPwaInstallSupported,

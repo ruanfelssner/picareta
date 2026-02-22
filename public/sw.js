@@ -1,4 +1,4 @@
-const STATIC_CACHE = 'picareta-static-v1'
+const STATIC_CACHE = 'picareta-static-v2'
 const STATIC_ASSETS = [
   '/',
   '/manifest.webmanifest',
@@ -31,7 +31,24 @@ self.addEventListener('fetch', (event) => {
   const requestUrl = new URL(event.request.url)
   if (requestUrl.origin !== self.location.origin) return
 
+  const isStaticAsset = STATIC_ASSETS.includes(requestUrl.pathname)
   const isDocument = event.request.mode === 'navigate'
+
+  if (isStaticAsset) {
+    event.respondWith(
+      caches.match(event.request).then((cached) => {
+        if (cached) return cached
+        return fetch(event.request).then((response) => {
+          if (!response || response.status !== 200) return response
+          const clone = response.clone()
+          caches.open(STATIC_CACHE).then((cache) => cache.put(event.request, clone))
+          return response
+        })
+      }),
+    )
+    return
+  }
+
   if (isDocument) {
     event.respondWith(
       fetch(event.request).catch(() => caches.match('/') || Response.error()),
@@ -39,16 +56,5 @@ self.addEventListener('fetch', (event) => {
     return
   }
 
-  event.respondWith(
-    caches.match(event.request).then((cached) => {
-      if (cached) return cached
-
-      return fetch(event.request).then((response) => {
-        if (!response || response.status !== 200) return response
-        const clone = response.clone()
-        caches.open(STATIC_CACHE).then((cache) => cache.put(event.request, clone))
-        return response
-      })
-    }),
-  )
+  event.respondWith(fetch(event.request))
 })

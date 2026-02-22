@@ -6,13 +6,16 @@ export default defineNuxtPlugin(() => {
 
   if (!('serviceWorker' in window.navigator)) return
 
-  window.addEventListener(
-    'load',
-    () => {
-      window.navigator.serviceWorker.register('/sw.js').catch((error) => {
-        console.warn('Falha ao registrar service worker:', error)
-      })
-    },
-    { once: true },
-  )
+  const registerServiceWorker = () => {
+    window.navigator.serviceWorker.register('/sw.js').catch((error) => {
+      console.warn('Falha ao registrar service worker:', error)
+    })
+  }
+
+  if (document.readyState === 'complete') {
+    registerServiceWorker()
+    return
+  }
+
+  window.addEventListener('load', registerServiceWorker, { once: true })
 })

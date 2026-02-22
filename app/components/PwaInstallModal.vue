@@ -2,6 +2,7 @@
 const {
   isModalOpen,
   isIosSafari,
+  isMobileBrowser,
   canNativeInstall,
   installNow,
   dismissForDays,
@@ -50,6 +51,20 @@ const closeForNow = () => dismissForDays()
             class="mt-4 rounded-xl border border-teal-200 bg-teal-50 px-3 py-2 text-sm text-teal-900"
           >
             Seu navegador suporta instalacao direta. Toque em Instalar agora.
+          </p>
+
+          <p
+            v-else-if="isMobileBrowser"
+            class="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900"
+          >
+            Para instalar no iPhone, abra no Safari e use Compartilhar -> Adicionar a Tela de Inicio.
+          </p>
+
+          <p
+            v-else
+            class="mt-4 rounded-xl border border-sky-200 bg-sky-50 px-3 py-2 text-sm text-sky-900"
+          >
+            No Chrome/Edge desktop, abra o menu do navegador e escolha Instalar app.
           </p>
 
           <div class="mt-5 flex flex-wrap gap-2">

@@ -173,8 +173,28 @@
                 <p class="mt-1 text-lg font-bold text-slate-900">{{ draft.brand }} {{ draft.model }}</p>
               </div>
               <div class="col-span-2">
-                <p class="text-xs font-semibold uppercase tracking-wider text-slate-500">Valor FIPE</p>
-                <p class="mt-1 text-2xl font-bold text-slate-900">{{ formatMoney(draft.fipeValue) }}</p>
+                <div class="flex items-center justify-between">
+                  <div>
+                    <p class="text-xs font-semibold uppercase tracking-wider text-slate-500">Valor FIPE</p>
+                    <p class="mt-1 text-2xl font-bold text-slate-900">{{ formatMoney(draft.fipeValue) }}</p>
+                  </div>
+                  <button
+                    class="rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100"
+                    type="button"
+                    @click="toggleFipeEdit"
+                  >
+                    {{ editingFipe ? 'Confirmar' : 'Editar' }}
+                  </button>
+                </div>
+                <div v-if="editingFipe" class="mt-2">
+                  <input
+                    v-model.number="draft.fipeValue"
+                    class="field-input"
+                    type="number"
+                    min="0"
+                    step="100"
+                  >
+                </div>
               </div>
             </div>
           </div>
@@ -249,19 +269,58 @@
               <div
                 v-for="cost in draft.costs"
                 :key="cost.id"
-                class="flex items-center justify-between rounded-lg bg-slate-50 p-3"
+                class="rounded-lg bg-slate-50 p-3"
               >
-                <div class="flex-1">
-                  <p class="text-sm font-semibold text-slate-700">{{ cost.label }}</p>
-                  <p class="text-xs text-slate-500">{{ formatMoney(cost.amount) }}</p>
+                <div class="flex items-center justify-between">
+                  <div class="flex-1">
+                    <p class="text-sm font-semibold text-slate-700">{{ cost.label }}</p>
+                    <p v-if="editingCostId !== cost.id" class="text-xs text-slate-500">{{ formatMoney(cost.amount) }}</p>
+                  </div>
+                  <div class="flex gap-2">
+                    <template v-if="editingCostId !== cost.id">
+                      <button
+                        class="rounded-lg border border-slate-300 px-2 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-100"
+                        type="button"
+                        @click="startEditCost(cost)"
+                      >
+                        Editar
+                      </button>
+                      <button
+                        class="rounded-lg border border-rose-300 px-2 py-1 text-xs font-semibold text-rose-700 hover:bg-rose-50"
+                        type="button"
+                        @click="removeCostItem(cost.id)"
+                      >
+                        Remover
+                      </button>
+                    </template>
+                    <template v-else>
+                      <button
+                        class="rounded-lg border border-emerald-300 px-2 py-1 text-xs font-semibold text-emerald-700 hover:bg-emerald-50"
+                        type="button"
+                        @click="confirmEditCost(cost.id)"
+                      >
+                        Confirmar
+                      </button>
+                      <button
+                        class="rounded-lg border border-rose-300 px-2 py-1 text-xs font-semibold text-rose-700 hover:bg-rose-50"
+                        type="button"
+                        @click="cancelEditCost"
+                      >
+                        Cancelar
+                      </button>
+                    </template>
+                  </div>
                 </div>
-                <button
-                  class="rounded-lg border border-rose-300 px-2 py-1 text-xs font-semibold text-rose-700 hover:bg-rose-50"
-                  type="button"
-                  @click="removeCostItem(cost.id)"
-                >
-                  Remover
-                </button>
+                <div v-if="editingCostId === cost.id" class="mt-2">
+                  <input
+                    v-model.number="editingCostAmount"
+                    class="field-input"
+                    type="number"
+                    min="0"
+                    step="50"
+                    placeholder="Valor"
+                  >
+                </div>
               </div>
             </div>
 
@@ -534,7 +593,10 @@ const currentStep = ref(1)
 const ocrProcessed = ref(false)
 const ocrSuccess = ref(false)
 const editingMargin = ref(false)
+const editingFipe = ref(false)
 const addingCost = ref(false)
+const editingCostId = ref<string | null>(null)
+const editingCostAmount = ref<number>(0)
 const showingDetails = ref(false)
 const showSavedCarsList = ref(false)
 const photoInputRef = ref<HTMLInputElement | null>(null)
@@ -620,6 +682,33 @@ const toggleMarginEdit = () => {
   }
 }
 
+const toggleFipeEdit = () => {
+  editingFipe.value = !editingFipe.value
+}
+
+const startEditCost = (cost: CostItem) => {
+  editingCostId.value = cost.id
+  editingCostAmount.value = cost.amount
+}
+
+const confirmEditCost = (id: string) => {
+  const cost = draft.costs.find((item) => item.id === id)
+  if (cost) {
+    const amount = Math.max(0, Number(editingCostAmount.value) || 0)
+    if (amount > 0) {
+      cost.amount = amount
+      setStatus('Custo atualizado.', 'ok')
+    }
+  }
+  editingCostId.value = null
+  editingCostAmount.value = 0
+}
+
+const cancelEditCost = () => {
+  editingCostId.value = null
+  editingCostAmount.value = 0
+}
+
 const toggleCostAdd = () => {
   addingCost.value = !addingCost.value
   if (!addingCost.value) {
@@ -685,7 +774,10 @@ const clearDraft = () => {
   targetMarginValue.value = 10000
   marginWasEdited.value = false
   editingMargin.value = false
+  editingFipe.value = false
   addingCost.value = false
+  editingCostId.value = null
+  editingCostAmount.value = 0
   showingDetails.value = false
   newCostType.value = 'documentacao'
   newCostAmount.value = 0
