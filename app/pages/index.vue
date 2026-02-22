@@ -692,14 +692,19 @@ const startEditCost = (cost: CostItem) => {
 }
 
 const confirmEditCost = (id: string) => {
-  const cost = draft.costs.find((item) => item.id === id)
-  if (cost) {
-    const amount = Math.max(0, Number(editingCostAmount.value) || 0)
-    if (amount > 0) {
-      cost.amount = amount
-      setStatus('Custo atualizado.', 'ok')
-    }
+  const amount = Math.max(0, Number(editingCostAmount.value) || 0)
+
+  if (amount <= 0) {
+    setStatus('Informe um valor maior que zero para confirmar.', 'warn')
+    return
   }
+
+  const index = draft.costs.findIndex((item) => item.id === id)
+  if (index !== -1) {
+    draft.costs[index] = { ...draft.costs[index], amount }
+    setStatus('Custo atualizado.', 'ok')
+  }
+
   editingCostId.value = null
   editingCostAmount.value = 0
 }
