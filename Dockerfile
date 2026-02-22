@@ -9,7 +9,9 @@ RUN corepack enable && \
       supervisor \
       python3 \
       python3-pip \
-      python3-venv && \
+      python3-venv \
+      libgl1 \
+      libglib2.0-0 && \
     rm -rf /var/lib/apt/lists/*
 
 # Copiar e instalar dependências Node.js
