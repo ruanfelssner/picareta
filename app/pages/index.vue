@@ -6,7 +6,8 @@
         <div
           v-for="stepNum in [1, 2, 3]"
           :key="stepNum"
-          class="flex flex-1 items-center"
+          class="flex items-center"
+          :class="stepNum === 3 ? '' : 'flex-1'"
         >
           <div
             class="flex h-10 w-10 items-center justify-center rounded-full text-sm font-bold transition-all"

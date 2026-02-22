@@ -86,6 +86,14 @@ docker-compose down
 
 Quando o app abrir no navegador e ainda nao estiver instalado, uma modal de convite sera exibida.
 
+## Diagnostico OCR em producao
+
+- Endpoint de health interno: `GET /api/v1/plate/health`
+- Esse endpoint testa a conexao Nuxt -> Flask e retorna:
+  - `targetBaseUrl` (base efetiva usada para o Flask)
+  - `ok` (true/false)
+  - `cause` quando houver falha (`ECONNREFUSED`, timeout etc.)
+
 ## Documentacao
 
 - **Requisitos**: [docs/01-requisitos.md](docs/01-requisitos.md)
