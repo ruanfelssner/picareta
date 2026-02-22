@@ -169,8 +169,31 @@
                 <p class="mt-1 text-lg font-bold text-slate-900">{{ draft.year || '-' }}</p>
               </div>
               <div class="col-span-2">
-                <p class="text-xs font-semibold uppercase tracking-wider text-slate-500">Marca/Modelo</p>
-                <p class="mt-1 text-lg font-bold text-slate-900">{{ draft.brand }} {{ draft.model }}</p>
+                <div class="flex items-center justify-between">
+                  <div>
+                    <p class="text-xs font-semibold uppercase tracking-wider text-slate-500">Marca/Modelo</p>
+                    <p class="mt-1 text-lg font-bold text-slate-900">{{ draft.brand }} {{ draft.model }}</p>
+                  </div>
+                  <button
+                    class="rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100"
+                    type="button"
+                    @click="toggleBrandModelEdit"
+                  >
+                    {{ editingBrandModel ? 'Confirmar' : 'Editar' }}
+                  </button>
+                </div>
+                <div v-if="editingBrandModel" class="mt-2 flex gap-2">
+                  <input
+                    v-model="draft.brand"
+                    class="field-input"
+                    placeholder="Marca"
+                  >
+                  <input
+                    v-model="draft.model"
+                    class="field-input"
+                    placeholder="Modelo"
+                  >
+                </div>
               </div>
               <div class="col-span-2">
                 <div class="flex items-center justify-between">
@@ -442,20 +465,42 @@
           <article
             v-for="item in localCars"
             :key="item.id"
-            class="rounded-xl border border-slate-200 bg-white p-4"
+            class="rounded-xl border-2 bg-white p-4 transition-colors"
+            :class="item.id === bestMarginCarId ? 'border-emerald-400' : 'border-slate-200'"
           >
-            <div class="flex items-start justify-between">
-              <div class="flex-1">
-                <p class="text-base font-bold text-slate-900">{{ item.plate || 'SEM PLACA' }}</p>
+            <div class="flex items-start justify-between gap-3">
+              <div v-if="item.photoDataUrl" class="shrink-0">
+                <img
+                  :src="item.photoDataUrl"
+                  alt="Foto"
+                  class="h-16 w-16 rounded-xl object-cover"
+                >
+              </div>
+              <div class="flex-1 min-w-0">
+                <div class="flex items-center gap-2">
+                  <p class="text-base font-bold text-slate-900">{{ item.plate || 'SEM PLACA' }}</p>
+                  <span
+                    v-if="item.id === bestMarginCarId"
+                    class="rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-bold text-emerald-700"
+                  >Melhor margem</span>
+                </div>
                 <p class="text-sm text-slate-600">{{ item.brand }} {{ item.model }}</p>
                 <p class="mt-1 text-xs text-slate-500">{{ formatDate(item.updatedAt) }}</p>
-                <div class="mt-2 flex gap-4 text-xs">
+                <div class="mt-2 flex flex-wrap gap-3 text-xs">
                   <span class="text-slate-600">Compra: <span class="font-semibold">{{ formatMoney(item.purchaseValue) }}</span></span>
                   <span class="text-slate-600">FIPE: <span class="font-semibold">{{ formatMoney(item.fipeValue) }}</span></span>
                 </div>
+                <div class="mt-2">
+                  <p class="text-xs font-semibold uppercase tracking-wider text-slate-500">Lucro projetado</p>
+                  <p
+                    class="text-2xl font-bold"
+                    :class="(item.summary?.expectedProfit ?? 0) >= 0 ? 'text-emerald-700' : 'text-rose-600'"
+                  >{{ formatMoney(item.summary?.expectedProfit ?? 0) }}</p>
+                  <p class="text-xs text-slate-500">{{ formatPercent(item.summary?.marginPercent ?? 0) }} da FIPE</p>
+                </div>
               </div>
 
-              <div class="flex gap-2">
+              <div class="flex shrink-0 gap-2">
                 <button
                   class="rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100"
                   type="button"
@@ -594,6 +639,7 @@ const ocrProcessed = ref(false)
 const ocrSuccess = ref(false)
 const editingMargin = ref(false)
 const editingFipe = ref(false)
+const editingBrandModel = ref(false)
 const addingCost = ref(false)
 const editingCostId = ref<string | null>(null)
 const editingCostAmount = ref<number>(0)
@@ -636,6 +682,15 @@ const canProceedToStep2 = computed(() => {
 
 const canSave = computed(() => {
   return draft.fipeValue > 0 && draft.costs.length > 0 && Boolean(draft.plate || draft.brand || draft.model)
+})
+
+const bestMarginCarId = computed(() => {
+  if (localCars.value.length === 0) return null
+  return localCars.value.reduce((best, car) => {
+    const bestProfit = best?.summary?.expectedProfit ?? -Infinity
+    const carProfit = car?.summary?.expectedProfit ?? -Infinity
+    return carProfit > bestProfit ? car : best
+  }, localCars.value[0]).id
 })
 
 watch(
@@ -684,6 +739,10 @@ const toggleMarginEdit = () => {
 
 const toggleFipeEdit = () => {
   editingFipe.value = !editingFipe.value
+}
+
+const toggleBrandModelEdit = () => {
+  editingBrandModel.value = !editingBrandModel.value
 }
 
 const startEditCost = (cost: CostItem) => {
@@ -780,6 +839,7 @@ const clearDraft = () => {
   marginWasEdited.value = false
   editingMargin.value = false
   editingFipe.value = false
+  editingBrandModel.value = false
   addingCost.value = false
   editingCostId.value = null
   editingCostAmount.value = 0
