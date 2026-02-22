@@ -62,6 +62,9 @@ class="mt-1 max-w-[56px] truncate text-center text-xs font-semibold"
             >
               {{ item.status === 'processing' ? '...' : (item.draft.plate || '???') }}
             </p>
+            <p v-if="item.status === 'error' && item.errorMessage" class="mt-0.5 max-w-[56px] truncate text-center text-[10px] leading-tight text-rose-400" :title="item.errorMessage">
+              {{ item.errorMessage }}
+            </p>
             <!-- Status dot -->
             <div
               class="absolute right-0.5 top-0.5 h-2.5 w-2.5 rounded-full border border-slate-900"
@@ -513,6 +516,7 @@ type DraftQueueItem = {
   plateCandidates: string[]
   targetMarginValue: number
   status: 'processing' | 'ready' | 'error'
+  errorMessage?: string
 }
 
 type DraftState = {
@@ -1073,18 +1077,20 @@ const processQueueItemAsync = async (index: number) => {
         item.draft.fipeValue = Number(fipeResult.fipeValue) || 0
         item.targetMarginValue = suggestMarginByFipe(item.draft.fipeValue)
         item.draft.costs = getDefaultCosts()
-      } catch {
-        // FIPE failed but plate was found — still mark ready
+      } catch (err: unknown) {
+        // FIPE failed but plate was found — still mark ready, warn via errorMessage
+        item.errorMessage = `FIPE: ${readErrorMessage(err)}`
       }
     } else {
       item.ocrSuccess = false
     }
 
     item.status = 'ready'
-  } catch {
+  } catch (err: unknown) {
     item.ocrProcessed = true
     item.ocrSuccess = false
     item.status = 'error'
+    item.errorMessage = readErrorMessage(err)
   }
 }
 

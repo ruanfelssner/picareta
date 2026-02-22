@@ -22,10 +22,12 @@ try:
 except Exception:  # pragma: no cover - ambiente pode não ter easyocr instalado
     easyocr = None
 
+_ultralytics_import_error = None
 try:
     from ultralytics import YOLO
-except Exception:  # pragma: no cover - ambiente pode não ter ultralytics instalado
+except Exception as err:  # pragma: no cover - ambiente pode não ter ultralytics instalado
     YOLO = None
+    _ultralytics_import_error = str(err)
 
 app = Flask(__name__)
 CORS(app)
@@ -260,7 +262,10 @@ def get_yolo_model():
     if _yolo_error is not None:
         return None, _yolo_model_path, _yolo_error
     if YOLO is None:
-        _yolo_error = "ultralytics não instalado"
+        if _ultralytics_import_error:
+            _yolo_error = f"ultralytics indisponivel: {_ultralytics_import_error}"
+        else:
+            _yolo_error = "ultralytics não instalado"
         return None, None, _yolo_error
 
     model_path = _resolve_yolo_model_path()

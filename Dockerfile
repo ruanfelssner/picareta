@@ -18,7 +18,8 @@ RUN pnpm install --no-frozen-lockfile
 
 # Copiar e instalar dependências Python
 COPY flask/requirements.txt ./flask/
-RUN pip3 install --break-system-packages --no-cache-dir -r flask/requirements.txt
+RUN pip3 install --break-system-packages --no-cache-dir -r flask/requirements.txt && \
+    python3 -c "import ultralytics; print('ultralytics:', ultralytics.__version__)"
 
 # Copiar código fonte
 COPY . .
