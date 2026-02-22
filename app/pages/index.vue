@@ -650,6 +650,20 @@ const photoInputRef = ref<HTMLInputElement | null>(null)
 const indexedDb = useIndexedAuctionCars()
 const api = useAuctionCarsApi()
 
+const savedCarsCount = useState<number>('savedCarsCount', () => 0)
+const triggerSavedCars = useState<number>('triggerSavedCars', () => 0)
+const triggerStep1 = useState<number>('triggerStep1', () => 0)
+
+watch(triggerSavedCars, () => {
+  currentStep.value = 3
+  showSavedCarsList.value = true
+  window.scrollTo({ top: 0, behavior: 'smooth' })
+})
+
+watch(triggerStep1, () => {
+  goToStep(1)
+})
+
 
 const totalCosts = computed(() => calculateTotalCosts(draft.costs))
 const suggestedMarginValue = computed(() => suggestMarginByFipe(draft.fipeValue))
@@ -796,6 +810,12 @@ const startNewCar = () => {
   window.scrollTo({ top: 0, behavior: 'smooth' })
 }
 
+const goToSavedCars = () => {
+  currentStep.value = 3
+  showSavedCarsList.value = true
+  window.scrollTo({ top: 0, behavior: 'smooth' })
+}
+
 const viewSavedCars = () => {
   showSavedCarsList.value = true
 }
@@ -860,7 +880,26 @@ const readErrorMessage = (error: unknown) => {
   const timeoutText = 'A leitura da imagem demorou demais (timeout). Tente foto menor/mais nítida e tente novamente.'
 
   if (error && typeof error === 'object') {
-    const maybeData = (error as { data?: { statusMessage?: string; message?: string }; message?: string }).data
+    const maybeData = (
+      error as {
+        data?: {
+          statusMessage?: string
+          message?: string
+          cause?: string
+          targetBaseUrl?: string
+        }
+        message?: string
+      }
+    ).data
+    const cause = String(maybeData?.cause || '')
+    const targetBaseUrl = String(maybeData?.targetBaseUrl || '')
+
+    if (cause.toLowerCase().includes('econnrefused')) {
+      return targetBaseUrl
+        ? `OCR indisponivel: conexao recusada em ${targetBaseUrl}. O processo Flask provavelmente nao iniciou no deploy.`
+        : 'OCR indisponivel: conexao recusada. O processo Flask provavelmente nao iniciou no deploy.'
+    }
+
     if (maybeData?.statusMessage) return maybeData.statusMessage
     if (maybeData?.message) return maybeData.message
 
@@ -1112,6 +1151,7 @@ const buildRecord = (): AuctionCarRecord => {
 
 const reloadLocal = async () => {
   localCars.value = await indexedDb.listCars()
+  savedCarsCount.value = localCars.value.length
 }
 
 const saveAndGoToStep3 = async () => {

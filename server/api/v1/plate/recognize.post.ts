@@ -1,5 +1,6 @@
 import { createError, readBody } from 'h3'
 import { z } from 'zod'
+import { resolveFlaskBaseUrl } from '@core/server/utils/flask'
 
 const requestSchema = z.object({
   imageBase64: z.string().min(1, 'Informe a imagem em base64.'),
@@ -20,21 +21,7 @@ export default defineEventHandler(async (event) => {
   }
 
   const runtimeConfig = useRuntimeConfig(event)
-  const configuredBase = String(runtimeConfig.flaskBaseUrl || 'http://127.0.0.1:5000').trim()
-  const requestHost = String(event.node.req.headers.host || '').toLowerCase()
-  let base = configuredBase
-
-  try {
-    const parsedConfiguredBase = new URL(configuredBase)
-    if (requestHost && parsedConfiguredBase.host.toLowerCase() === requestHost) {
-      const flaskPort = Number(process.env.FLASK_PORT || 5000)
-      base = `http://127.0.0.1:${Number.isFinite(flaskPort) ? flaskPort : 5000}`
-    }
-  } catch {
-    // fallback para base configurada quando URL for invalida
-  }
-
-  base = base.replace(/\/+$/, '')
+  const base = resolveFlaskBaseUrl(event, runtimeConfig)
   const timeout = Number(runtimeConfig.flaskTimeoutMs) || 120000
 
   try {
