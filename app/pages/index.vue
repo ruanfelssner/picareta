@@ -110,22 +110,45 @@ class="mt-1 max-w-[56px] truncate text-center text-xs font-semibold"
             class="hidden"
             type="file"
             accept="image/*"
+            @change="onPhotoSelected"
+          >
+          <input
+            ref="photoCameraInputRef"
+            class="hidden"
+            type="file"
+            accept="image/*"
             capture="environment"
             @change="onPhotoSelected"
           >
 
-          <button
-            class="flex w-full flex-col items-center justify-center rounded-2xl border-2 border-dashed border-slate-300 bg-white py-16 text-slate-600 hover:border-slate-400 hover:bg-slate-50"
-            type="button"
-            @click="triggerPhotoUpload"
-          >
-            <svg class="h-12 w-12" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" />
-            </svg>
-            <p class="mt-3 text-sm font-semibold">Tirar foto / Upload</p>
-            <p v-if="draftQueue.length > 0" class="mt-1 text-xs text-slate-400">{{ draftQueue.filter(i => i.status === 'ready').length }} prontos na fila</p>
-          </button>
+          <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <button
+              class="flex w-full flex-col items-center justify-center rounded-2xl border-2 border-dashed border-slate-300 bg-white py-10 text-slate-600 hover:border-slate-400 hover:bg-slate-50"
+              type="button"
+              @click="triggerCameraCapture"
+            >
+              <svg class="h-10 w-10" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" />
+              </svg>
+              <p class="mt-2 text-sm font-semibold">Tirar foto</p>
+            </button>
+
+            <button
+              class="flex w-full flex-col items-center justify-center rounded-2xl border-2 border-dashed border-slate-300 bg-white py-10 text-slate-600 hover:border-slate-400 hover:bg-slate-50"
+              type="button"
+              @click="triggerGalleryUpload"
+            >
+              <svg class="h-10 w-10" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7a2 2 0 012-2h3l1 1h10a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V7z" />
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 14l2-2 2 2 3-3 3 3" />
+              </svg>
+              <p class="mt-2 text-sm font-semibold">Escolher da galeria</p>
+            </button>
+          </div>
+          <p v-if="draftQueue.length > 0" class="mt-2 text-center text-xs text-slate-400">
+            {{ draftQueue.filter(i => i.status === 'ready').length }} prontos na fila
+          </p>
         </div>
       </div>
     </section>
@@ -637,6 +660,7 @@ const showSavedCarsList = ref(false)
 const justSaved = ref(false)
 const activeQueueId = ref<string | null>(null)
 const photoInputRef = ref<HTMLInputElement | null>(null)
+const photoCameraInputRef = ref<HTMLInputElement | null>(null)
 
 const indexedDb = useIndexedAuctionCars()
 const api = useAuctionCarsApi()
@@ -723,8 +747,12 @@ const goToStep = (step: number) => {
   window.scrollTo({ top: 0, behavior: 'smooth' })
 }
 
-const triggerPhotoUpload = () => {
+const triggerGalleryUpload = () => {
   photoInputRef.value?.click()
+}
+
+const triggerCameraCapture = () => {
+  photoCameraInputRef.value?.click()
 }
 
 const clearPhoto = () => {
