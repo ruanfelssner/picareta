@@ -12,6 +12,13 @@ export default defineNuxtConfig({
     '@core': fileURLToPath(new URL('./', import.meta.url)),
   },
   runtimeConfig: {
+    flaskBaseUrl:
+      process.env.NUXT_FLASK_BASE_URL ||
+      process.env.NUXT_PUBLIC_FLASK_BASE_URL ||
+      'http://127.0.0.1:5000',
+    flaskTimeoutMs: Number(
+      process.env.NUXT_FLASK_TIMEOUT_MS || process.env.NUXT_PUBLIC_FLASK_TIMEOUT_MS || 120000,
+    ),
     mongoUri: '',
     mongoDbName: 'picareta',
     placaFipeBaseUrl: '',
@@ -30,8 +37,6 @@ export default defineNuxtConfig({
       siteName: 'Picareta',
       defaultTitle: 'Picareta',
       defaultDescription: 'Cadastro e análise de carros de leilão com cálculo de margem.',
-      flaskBaseUrl: process.env.NUXT_PUBLIC_FLASK_BASE_URL || 'http://localhost:5000',
-      flaskTimeoutMs: Number(process.env.NUXT_PUBLIC_FLASK_TIMEOUT_MS || 120000),
     },
   },
   app: {

@@ -30,6 +30,8 @@ server/
       index.get.ts
       index.post.ts
       [id].delete.ts
+    plate/
+      recognize.post.ts
     plate-fipe/
       lookup.post.ts
   repositories/
@@ -55,7 +57,9 @@ flask/                    # Backend Python
 2. UI calcula margem em tempo real usando `shared/valuation.ts`.
 3. Registro e salvo em `IndexedDB` (`useIndexedAuctionCars`).
 4. Quando houver internet e backend configurado, UI sincroniza via `POST /api/v1/auction-cars`.
-5. Consulta placa/FIPE acontece via `POST /api/v1/plate-fipe/lookup`.
+5. OCR de placa acontece via `POST /api/v1/plate/recognize` (Nuxt server).
+6. Nuxt server encaminha OCR para Flask interno via `NUXT_FLASK_BASE_URL` (padrao `127.0.0.1:5000`).
+7. Consulta placa/FIPE acontece via `POST /api/v1/plate-fipe/lookup`.
 
 ## 5. Decisoes tecnicas
 
@@ -63,6 +67,7 @@ flask/                    # Backend Python
 - IndexedDB: evita perda de dados em campo sem conectividade.
 - `shared/valuation.ts`: mesma regra de margem no front e backend.
 - **Flask**: API Python simples e leve para futuras integrações.
+- **Proxy Nuxt para OCR**: evita chamada browser -> `localhost:5000` em producao e elimina dependencia de CORS para OCR interno.
 - **Supervisor**: gerencia múltiplos processos (Nuxt + Flask) em um único container Docker (produção).
 - Fallback mock da API de placa/FIPE: nao bloqueia prototipo enquanto credenciais reais nao estiverem disponiveis.
 

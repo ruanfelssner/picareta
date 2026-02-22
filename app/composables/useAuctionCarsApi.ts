@@ -25,8 +25,6 @@ type PlateRecognitionResult = {
 }
 
 export function useAuctionCarsApi() {
-  const runtimeConfig = useRuntimeConfig()
-
   const listRemoteCars = async (limit = 50) =>
     $fetch<{ items: AuctionCarRecord[]; collection: string }>('/api/v1/auction-cars', {
       method: 'GET',
@@ -58,8 +56,6 @@ export function useAuctionCarsApi() {
     filename?: string
     requestId?: string
   }) => {
-    const base = String(runtimeConfig.public.flaskBaseUrl || 'http://localhost:5000').replace(/\/+$/, '')
-    const timeout = Number(runtimeConfig.public.flaskTimeoutMs) || 120000
     return $fetch<{
       ok: boolean
       input: {
@@ -72,10 +68,9 @@ export function useAuctionCarsApi() {
       }
       result: PlateRecognitionResult
       requestId?: string
-    }>(`${base}/api/v1/plate/recognize`, {
+    }>('/api/v1/plate/recognize', {
       method: 'POST',
       body: payload,
-      timeout,
     })
   }
 

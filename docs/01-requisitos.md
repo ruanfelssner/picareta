@@ -10,6 +10,7 @@ O projeto Picareta precisa permitir avaliacao rapida de carros de leilao no celu
 - RF-02: aceitar foto frontal do carro via camera do celular.
 - RF-02.1: expor endpoint de OCR de placa que receba imagem em base64 (string pura ou data URL) e retorne placa/candidatos em JSON.
 - RF-02.2: manter endpoint versionado `POST /api/v1/plate/recognize` com payload `imageBase64` para integracao direta com Nuxt.
+- RF-02.3: em producao, o frontend deve chamar OCR via mesma origem (`/api/v1/plate/recognize` no Nuxt server), e o Nuxt deve encaminhar para o Flask interno configurado por `NUXT_FLASK_BASE_URL`.
 - RF-03: consultar dados de placa/FIPE via API externa (quando configurada).
 - RF-03.1: consulta de placa/FIPE deve ocorrer por placa informada manualmente.
 - RF-03.2: consultar `https://placafipe.com/placa/{PLACA}` e extrair os campos da tabela `fipeTablePriceDetail`.
