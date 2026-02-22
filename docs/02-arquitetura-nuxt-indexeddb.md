@@ -14,10 +14,15 @@ A aplicacao usa Nuxt 4 com quatro camadas principais:
 ```text
 app/
   assets/css/main.css
+  components/
+    PwaInstallModal.vue
   composables/
     useIndexedAuctionCars.ts
     useAuctionCarsApi.ts
+    usePwaInstall.ts
   layouts/default.vue
+  plugins/
+    pwa.client.ts
   pages/index.vue
 
 shared/
@@ -60,6 +65,7 @@ flask/                    # Backend Python
 5. OCR de placa acontece via `POST /api/v1/plate/recognize` (Nuxt server).
 6. Nuxt server encaminha OCR para Flask interno via `NUXT_FLASK_BASE_URL` (padrao `127.0.0.1:5000`).
 7. Consulta placa/FIPE acontece via `POST /api/v1/plate-fipe/lookup`.
+8. Quando app abre no navegador mobile, composable de PWA avalia instalacao e pode abrir modal de convite.
 
 ## 5. Decisoes tecnicas
 
@@ -69,6 +75,7 @@ flask/                    # Backend Python
 - **Flask**: API Python simples e leve para futuras integrações.
 - **Proxy Nuxt para OCR**: evita chamada browser -> `localhost:5000` em producao e elimina dependencia de CORS para OCR interno.
 - **Supervisor**: gerencia múltiplos processos (Nuxt + Flask) em um único container Docker (produção).
+- **PWA com service worker**: permite instalacao no celular e suporte de uso em modo app (standalone).
 - Fallback mock da API de placa/FIPE: nao bloqueia prototipo enquanto credenciais reais nao estiverem disponiveis.
 
 ## 6. Infraestrutura

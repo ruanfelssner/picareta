@@ -16,6 +16,7 @@ Aplicacao Nuxt para cadastrar carros de leilao, estimar custos de recuperacao e 
 ✅ Cálculo de margem em tempo real  
 ✅ Operação offline com IndexedDB  
 ✅ Sincronização com backend quando online
+✅ Instalação como PWA (Android/iPhone)
 
 ## Setup
 
@@ -76,6 +77,15 @@ docker-compose logs -f
 docker-compose down
 ```
 
+## Instalacao no iPhone (PWA)
+
+1. Abra o sistema no Safari.
+2. Toque no botao **Compartilhar**.
+3. Escolha **Adicionar a Tela de Inicio**.
+4. Confirme em **Adicionar**.
+
+Quando o app abrir no navegador e ainda nao estiver instalado, uma modal de convite sera exibida.
+
 ## Documentacao
 
 - **Requisitos**: [docs/01-requisitos.md](docs/01-requisitos.md)
@@ -119,7 +129,7 @@ Ver [.env.example](.env.example) para todas as opções.
 Principais:
 
 - `FLASK_PORT`: Porta do serviço Flask (default: 5000)
-- `NUXT_FLASK_BASE_URL`: URL base do Flask usada pelo servidor Nuxt (default: http://127.0.0.1:5000)
+- `NUXT_FLASK_BASE_URL`: URL base do Flask usada pelo servidor Nuxt (default: http://127.0.0.1:5000). Em deploy unico, nao use o dominio publico do Nuxt para evitar loop de requisicao.
 - `NUXT_FLASK_TIMEOUT_MS`: timeout da chamada OCR Flask em ms (default: 120000)
 - `NUXT_MONGO_URI`: Connection string do MongoDB
 - `NUXT_PLACA_FIPE_BASE_URL`: base URL do provider de placa/FIPE

@@ -11,5 +11,7 @@
     <main class="mx-auto w-full max-w-5xl px-4 pt-6 sm:px-6">
       <slot />
     </main>
+
+    <PwaInstallModal />
   </div>
 </template>

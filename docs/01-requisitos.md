@@ -32,6 +32,9 @@ O projeto Picareta precisa permitir avaliacao rapida de carros de leilao no celu
 - RF-08: permitir reabrir e editar registros salvos localmente.
 - RF-09: sincronizar registro para API server.
 - RF-10: expor API com colecao dedicada para carros de leilao (`auction_cars`).
+- RF-11: disponibilizar instalacao do app como PWA no celular (incluindo iPhone via Safari).
+- RF-11.1: mostrar modal orientando instalacao quando app nao estiver instalado.
+- RF-11.2: quando navegador suportar `beforeinstallprompt`, permitir acao direta de instalacao pela modal.
 
 ## 3. Requisitos nao funcionais
 
