@@ -291,6 +291,15 @@ def _preprocess_for_ocr(img_bgr: np.ndarray) -> np.ndarray:
     return cv2.cvtColor(thr, cv2.COLOR_GRAY2BGR)
 
 
+def _upscale_for_ocr(np_img_rgb: np.ndarray, factor: float = 2.0) -> np.ndarray:
+    if cv2 is None or factor <= 1.0:
+        return np_img_rgb
+    h, w = np_img_rgb.shape[:2]
+    new_w = max(w + 1, int(round(w * factor)))
+    new_h = max(h + 1, int(round(h * factor)))
+    return cv2.resize(np_img_rgb, (new_w, new_h), interpolation=cv2.INTER_CUBIC)
+
+
 def _ocr_scan(
     np_img_rgb: np.ndarray,
     source: str,
@@ -308,14 +317,26 @@ def _ocr_scan(
         }]
 
     detections = []
-    # Tenta em RGB e em versão pré-processada para aumentar chance em placas sujas/anguladas.
-    variants = [np_img_rgb]
+    # Tenta em variantes para aumentar chance em placas sujas/anguladas/pequenas.
+    variants = [(np_img_rgb, 0.0)]
     if cv2 is not None:
-        variants.append(_preprocess_for_ocr(cv2.cvtColor(np_img_rgb, cv2.COLOR_RGB2BGR))[:, :, ::-1])
+        preprocessed = _preprocess_for_ocr(cv2.cvtColor(np_img_rgb, cv2.COLOR_RGB2BGR))[:, :, ::-1]
+        upscaled = _upscale_for_ocr(np_img_rgb, factor=2.0)
+        upscaled_preprocessed = _preprocess_for_ocr(cv2.cvtColor(upscaled, cv2.COLOR_RGB2BGR))[:, :, ::-1]
+        variants.extend([
+            (preprocessed, 0.03),
+            (upscaled, 0.05),
+            (upscaled_preprocessed, 0.08),
+        ])
 
-    for variant_index, variant in enumerate(variants):
+    for variant_index, (variant, variant_boost) in enumerate(variants):
         try:
-            read = reader.readtext(variant, detail=1, paragraph=False)
+            read = reader.readtext(
+                variant,
+                detail=1,
+                paragraph=False,
+                allowlist="ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
+            )
         except Exception:
             continue
 
@@ -332,8 +353,9 @@ def _ocr_scan(
                     score += 0.10
                 if source_confidence is not None:
                     score += float(source_confidence) * 0.10
-                if variant_index == 1:
-                    score += 0.03
+                score += float(variant_boost)
+                if variant_index >= 2:
+                    score += 0.01
                 # Penaliza candidatos que exigiram muitas correções de OCR (ex.: O<->0).
                 score -= penalty * 0.03
                 detections.append({
@@ -356,6 +378,8 @@ def _fallback_regions(np_img_rgb: np.ndarray) -> List[Tuple[str, np.ndarray, Tup
     regions.append(("bottom_third", np_img_rgb[(h * 2) // 3:h, 0:w], (0, (h * 2) // 3)))
     center_x1, center_x2 = w // 4, (w * 3) // 4
     regions.append(("center_bottom", np_img_rgb[h // 2:h, center_x1:center_x2], (center_x1, h // 2)))
+    regions.append(("middle_band", np_img_rgb[h // 3:(h * 2) // 3, 0:w], (0, h // 3)))
+    regions.append(("center_mid", np_img_rgb[h // 3:h, center_x1:center_x2], (center_x1, h // 3)))
     return regions
 
 
@@ -394,7 +418,7 @@ def recognize_plate(img: Image.Image) -> dict:
     yolo_model, yolo_model_path, yolo_err = get_yolo_model()
     if yolo_model is not None:
         try:
-            yolo_result = yolo_model.predict(np_img_rgb, conf=0.20, verbose=False)
+            yolo_result = yolo_model.predict(np_img_rgb, conf=0.12, verbose=False)
             pipeline.append("yolo_plate_crop")
             if yolo_result and len(yolo_result[0].boxes) > 0:
                 boxes = yolo_result[0].boxes

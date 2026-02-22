@@ -2,15 +2,10 @@
   <div class="min-h-screen bg-linear-to-br from-slate-50 to-slate-100 pb-8">
     <!-- Step Indicator -->
     <div class="sticky top-0 z-10 bg-white/80 px-4 py-4 backdrop-blur-sm">
-      <div class="mx-auto flex max-w-md items-center justify-between">
-        <div
-          v-for="stepNum in [1, 2, 3]"
-          :key="stepNum"
-          class="flex items-center"
-          :class="stepNum === 3 ? '' : 'flex-1'"
-        >
+      <div class="mx-auto flex max-w-xs items-center">
+        <template v-for="stepNum in [1, 2, 3]" :key="stepNum">
           <div
-            class="flex h-10 w-10 items-center justify-center rounded-full text-sm font-bold transition-all"
+            class="flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-sm font-bold transition-all"
             :class="{
               'bg-slate-900 text-white': currentStep === stepNum,
               'bg-emerald-500 text-white': currentStep > stepNum,
@@ -20,7 +15,71 @@
             <span v-if="currentStep > stepNum">✓</span>
             <span v-else>{{ stepNum }}</span>
           </div>
-          <div v-if="stepNum < 3" class="mx-2 h-0.5 flex-1 bg-slate-200" :class="{ 'bg-emerald-500': currentStep > stepNum }" />
+          <div v-if="stepNum < 3" class="mx-2 h-0.5 flex-1 bg-slate-200 transition-colors" :class="{ 'bg-emerald-500': currentStep > stepNum }" />
+        </template>
+      </div>
+    </div>
+
+    <!-- Fila de rascunhos -->
+    <div v-if="draftQueue.length > 0" class="bg-slate-900 px-4 py-2">
+      <div class="mx-auto max-w-md">
+        <p class="mb-1.5 text-center text-xs text-slate-400">Fila ({{ draftQueue.length }}) &mdash; toque no pronto para preencher</p>
+        <div class="flex gap-2 overflow-x-auto pb-1">
+          <button
+            v-for="(item, idx) in draftQueue"
+            :key="item.draft.id"
+            class="relative shrink-0 rounded-xl border-2 p-1 text-left transition-colors"
+            :class="{
+              'border-white bg-slate-700 cursor-pointer': item.draft.id === activeQueueId,
+              'border-slate-600 bg-slate-800 hover:border-slate-400 cursor-pointer': item.status === 'ready' && item.draft.id !== activeQueueId,
+              'border-slate-700 bg-slate-800 cursor-default opacity-70': item.status !== 'ready',
+            }"
+            type="button"
+            @click="item.status === 'ready' && loadFromQueue(idx)"
+          >
+            <div class="relative">
+              <img
+                v-if="item.draft.photoDataUrl"
+                :src="item.draft.photoDataUrl"
+                class="h-14 w-14 rounded-lg object-cover"
+                alt=""
+              >
+              <div v-else class="flex h-14 w-14 items-center justify-center rounded-lg bg-slate-700">
+                <svg class="h-6 w-6 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" /></svg>
+              </div>
+              <!-- Status overlay for processing -->
+              <div v-if="item.status === 'processing'" class="absolute inset-0 flex items-center justify-center rounded-lg bg-slate-900/60">
+                <div class="h-5 w-5 animate-spin rounded-full border-2 border-white border-t-transparent" />
+              </div>
+              <!-- Selected checkmark -->
+              <div v-if="item.draft.id === activeQueueId" class="absolute inset-0 flex items-center justify-center rounded-lg bg-slate-900/40">
+                <svg class="h-6 w-6 text-white drop-shadow" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7" /></svg>
+              </div>
+            </div>
+            <p
+class="mt-1 max-w-[56px] truncate text-center text-xs font-semibold"
+              :class="item.draft.id === activeQueueId ? 'text-white' : 'text-slate-300'"
+            >
+              {{ item.status === 'processing' ? '...' : (item.draft.plate || '???') }}
+            </p>
+            <!-- Status dot -->
+            <div
+              class="absolute right-0.5 top-0.5 h-2.5 w-2.5 rounded-full border border-slate-900"
+              :class="{
+                'bg-slate-400 animate-pulse': item.status === 'processing',
+                'bg-emerald-400': item.status === 'ready' && item.ocrSuccess,
+                'bg-amber-400': item.status === 'ready' && !item.ocrSuccess,
+                'bg-rose-400': item.status === 'error',
+              }"
+            />
+            <button
+              class="absolute -right-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-rose-600 text-white hover:bg-rose-500"
+              type="button"
+              @click.stop="removeFromQueue(idx)"
+            >
+              <svg class="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M6 18L18 6M6 6l12 12" /></svg>
+            </button>
+          </button>
         </div>
       </div>
     </div>
@@ -29,7 +88,8 @@
     <section v-if="currentStep === 1" class="mx-4 mt-4 space-y-4">
       <div class="surface-card rounded-2xl p-5">
         <h2 class="text-xl font-bold text-slate-900">Foto do veículo</h2>
-        <p class="mt-1 text-sm text-slate-600">Envie a foto frontal com a placa visível</p>
+        <p class="mt-1 text-sm text-slate-600">Envie quantas fotos quiser — cada uma vai para a fila e processa em segundo plano</p>
+
         <div
           v-if="statusMessage && statusTone !== 'ok'"
           class="mt-3 rounded-xl px-3 py-2 text-sm font-semibold"
@@ -52,7 +112,6 @@
           >
 
           <button
-            v-if="!draft.photoDataUrl"
             class="flex w-full flex-col items-center justify-center rounded-2xl border-2 border-dashed border-slate-300 bg-white py-16 text-slate-600 hover:border-slate-400 hover:bg-slate-50"
             type="button"
             @click="triggerPhotoUpload"
@@ -62,94 +121,9 @@
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" />
             </svg>
             <p class="mt-3 text-sm font-semibold">Tirar foto / Upload</p>
+            <p v-if="draftQueue.length > 0" class="mt-1 text-xs text-slate-400">{{ draftQueue.filter(i => i.status === 'ready').length }} prontos na fila</p>
           </button>
-
-          <div v-else class="relative">
-            <img
-              :src="draft.photoDataUrl"
-              alt="Foto do carro"
-              class="h-64 w-full rounded-2xl object-cover"
-            >
-            <button
-              class="absolute right-2 top-2 rounded-full bg-slate-900/80 p-2 text-white hover:bg-slate-900"
-              type="button"
-              @click="clearPhoto"
-            >
-              <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
-              </svg>
-            </button>
-          </div>
-
-          <div v-if="loadingLookup" class="mt-4 flex items-center justify-center space-x-3 rounded-xl bg-slate-100 py-4">
-            <div class="h-5 w-5 animate-spin rounded-full border-2 border-slate-900 border-t-transparent" />
-            <p class="text-sm font-semibold text-slate-700">Processando imagem...</p>
-          </div>
-
-          <div v-if="ocrProcessed && !ocrSuccess" class="mt-4 space-y-3 rounded-xl border border-amber-300 bg-amber-50 p-4">
-            <p class="text-sm font-semibold text-amber-900">Não foi possível identificar a placa automaticamente</p>
-            <div>
-              <label class="field-label">Digite a placa manualmente</label>
-              <input
-                v-model="draft.plate"
-                class="field-input"
-                inputmode="text"
-                placeholder="ABC1D23"
-                @input="onPlateInput"
-              >
-            </div>
-            <button
-              class="w-full rounded-lg border border-slate-300 bg-white py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-50"
-              type="button"
-              :disabled="loadingLookup || !draft.plate"
-              @click="lookupCurrentPlate"
-            >
-              Consultar placa
-            </button>
-          </div>
-
-          <div v-if="ocrProcessed && ocrSuccess" class="mt-4 space-y-3 rounded-xl border border-emerald-300 bg-emerald-50 p-4">
-            <div class="flex items-center space-x-2">
-              <svg class="h-6 w-6 text-emerald-700" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-              </svg>
-              <p class="text-sm font-bold text-emerald-900">Placa identificada com sucesso!</p>
-            </div>
-            <div class="rounded-lg bg-white p-3">
-              <p class="text-xs font-semibold uppercase tracking-wider text-slate-500">Placa</p>
-              <p class="mt-1 text-2xl font-bold text-slate-900">{{ draft.plate }}</p>
-            </div>
-            <div v-if="draft.brand || draft.model" class="rounded-lg bg-white p-3">
-              <p class="text-xs font-semibold uppercase tracking-wider text-slate-500">Veículo</p>
-              <p class="mt-1 text-lg font-bold text-slate-900">{{ draft.brand }} {{ draft.model }}</p>
-              <p class="text-sm text-slate-600">Ano: {{ draft.year || '-' }} · FIPE: {{ formatMoney(draft.fipeValue) }}</p>
-            </div>
-          </div>
-
-          <div v-if="plateCandidates.length > 0 && !ocrSuccess" class="mt-4 rounded-xl border border-slate-200 bg-white p-4">
-            <p class="text-xs font-semibold uppercase tracking-wider text-slate-500">Candidatos detectados</p>
-            <div class="mt-2 flex flex-wrap gap-2">
-              <button
-                v-for="candidate in plateCandidates"
-                :key="candidate"
-                class="rounded-full border border-slate-300 bg-slate-50 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100"
-                type="button"
-                @click="applyPlateCandidate(candidate)"
-              >
-                {{ candidate }}
-              </button>
-            </div>
-          </div>
         </div>
-
-        <button
-          class="mt-6 w-full rounded-xl bg-slate-900 py-3 text-base font-bold text-white hover:bg-slate-800 disabled:opacity-50"
-          type="button"
-          :disabled="!canProceedToStep2"
-          @click="goToStep(2)"
-        >
-          Prosseguir
-        </button>
       </div>
     </section>
 
@@ -419,7 +393,7 @@
 
     <!-- STEP 3: Sucesso -->
     <section v-if="currentStep === 3" class="mx-4 mt-4 space-y-4">
-      <div class="surface-card rounded-2xl p-5 text-center">
+      <div v-if="justSaved" class="surface-card rounded-2xl p-5 text-center">
         <div class="mx-auto flex h-20 w-20 items-center justify-center rounded-full bg-emerald-100">
           <svg class="h-10 w-10 text-emerald-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
@@ -532,6 +506,15 @@ import { useIndexedAuctionCars } from '~/composables/useIndexedAuctionCars'
 import { calculateAuctionSummary, calculateTotalCosts, normalizePlate } from '@core/shared/valuation'
 import type { AuctionCarRecord, CostItem } from '@core/shared/types/auction'
 
+type DraftQueueItem = {
+  draft: DraftState
+  ocrProcessed: boolean
+  ocrSuccess: boolean
+  plateCandidates: string[]
+  targetMarginValue: number
+  status: 'processing' | 'ready' | 'error'
+}
+
 type DraftState = {
   id: string
   plate: string
@@ -619,6 +602,7 @@ const dateFormatter = new Intl.DateTimeFormat('pt-BR', {
 })
 
 const draft = reactive<DraftState>(createEmptyDraft())
+const draftQueue = ref<DraftQueueItem[]>([])
 const localCars = ref<AuctionCarRecord[]>([])
 const loadingLookup = ref(false)
 const statusMessage = ref('')
@@ -646,6 +630,8 @@ const editingCostId = ref<string | null>(null)
 const editingCostAmount = ref<number>(0)
 const showingDetails = ref(false)
 const showSavedCarsList = ref(false)
+const justSaved = ref(false)
+const activeQueueId = ref<string | null>(null)
 const photoInputRef = ref<HTMLInputElement | null>(null)
 
 const indexedDb = useIndexedAuctionCars()
@@ -656,6 +642,7 @@ const triggerSavedCars = useState<number>('triggerSavedCars', () => 0)
 const triggerStep1 = useState<number>('triggerStep1', () => 0)
 
 watch(triggerSavedCars, () => {
+  justSaved.value = false
   currentStep.value = 3
   showSavedCarsList.value = true
   window.scrollTo({ top: 0, behavior: 'smooth' })
@@ -745,6 +732,56 @@ const clearPhoto = () => {
   ocrSecondScore.value = 0
 }
 
+const addToQueue = () => {
+  // kept for backward compat but no longer used by template
+  if (!draft.photoDataUrl) return
+  draftQueue.value.push({
+    draft: { ...draft, costs: draft.costs.map(c => ({ ...c })) },
+    ocrProcessed: ocrProcessed.value,
+    ocrSuccess: ocrSuccess.value,
+    plateCandidates: [...plateCandidates.value],
+    targetMarginValue: targetMarginValue.value,
+    status: 'ready',
+  })
+  // reset just the photo/OCR fields, keep on step 1
+  applyDraft(createEmptyDraft())
+  ocrProcessed.value = false
+  ocrSuccess.value = false
+  plateCandidates.value = []
+  ocrBestScore.value = 0
+  ocrSecondScore.value = 0
+  marginWasEdited.value = false
+  targetMarginValue.value = 10000
+  setStatus('Adicionado à fila! Envie a próxima foto.', 'ok')
+}
+
+const loadFromQueue = (index: number) => {
+  const item = draftQueue.value[index]
+  if (!item || item.status !== 'ready') return
+
+  // Mark as active (stays in queue)
+  activeQueueId.value = item.draft.id
+
+  applyDraft(item.draft)
+  ocrProcessed.value = item.ocrProcessed
+  ocrSuccess.value = item.ocrSuccess
+  plateCandidates.value = item.plateCandidates
+  targetMarginValue.value = item.targetMarginValue || suggestMarginByFipe(item.draft.fipeValue)
+  marginWasEdited.value = item.draft.fipeValue > 0
+  editingMargin.value = false
+  editingFipe.value = false
+  editingBrandModel.value = false
+  addingCost.value = false
+  editingCostId.value = null
+  showingDetails.value = false
+  currentStep.value = 2
+  window.scrollTo({ top: 0, behavior: 'smooth' })
+}
+
+const removeFromQueue = (index: number) => {
+  draftQueue.value.splice(index, 1)
+}
+
 const toggleMarginEdit = () => {
   editingMargin.value = !editingMargin.value
   if (!editingMargin.value) {
@@ -812,6 +849,7 @@ const startNewCar = () => {
 }
 
 const goToSavedCars = () => {
+  justSaved.value = false
   currentStep.value = 3
   showSavedCarsList.value = true
   window.scrollTo({ top: 0, behavior: 'smooth' })
@@ -865,6 +903,8 @@ const clearDraft = () => {
   editingCostId.value = null
   editingCostAmount.value = 0
   showingDetails.value = false
+  justSaved.value = false
+  activeQueueId.value = null
   newCostType.value = 'documentacao'
   newCostAmount.value = 0
   newCostOtherLabel.value = ''
@@ -962,8 +1002,10 @@ const lookupCurrentPlate = async () => {
 const onPhotoSelected = async (event: Event) => {
   const input = event.target as HTMLInputElement
   const file = input.files?.[0]
-
   if (!file) return
+
+  // Reset input immediately so user can pick another photo right away
+  input.value = ''
 
   if (file.size > 4_000_000) {
     setStatus('Imagem grande demais. Use foto ate 4MB.', 'warn')
@@ -977,12 +1019,73 @@ const onPhotoSelected = async (event: Event) => {
     reader.readAsDataURL(file)
   })
 
-  draft.photoDataUrl = fileData
-  ocrProcessed.value = false
-  ocrSuccess.value = false
-  setStatus('Foto carregada. Processando...', 'ok')
-  
-  await extractPlateFromPhoto()
+  // Add to queue immediately with status 'processing'
+  const newItem: DraftQueueItem = {
+    draft: { ...createEmptyDraft(), photoDataUrl: fileData },
+    ocrProcessed: false,
+    ocrSuccess: false,
+    plateCandidates: [],
+    targetMarginValue: 10000,
+    status: 'processing',
+  }
+  draftQueue.value.push(newItem)
+  const queueIndex = draftQueue.value.length - 1
+
+  setStatus('Foto adicionada! Pode enviar mais enquanto processa.', 'ok')
+
+  // Process OCR in background
+  processQueueItemAsync(queueIndex)
+}
+
+const processQueueItemAsync = async (index: number) => {
+  const item = draftQueue.value[index]
+  if (!item || !item.draft.photoDataUrl) {
+    if (item) { item.status = 'error' }
+    return
+  }
+
+  try {
+    const response = await api.extractPlateFromImage({
+      imageBase64: item.draft.photoDataUrl,
+      filename: 'camera-upload',
+      requestId: createId(),
+    })
+
+    const { result } = response
+    const candidates = Array.isArray(result.candidates) ? result.candidates : []
+    const dedupedCandidates = Array.from(
+      new Set(candidates.map((c: { plate?: string }) => normalizePlate(c?.plate || '')).filter(Boolean)),
+    )
+
+    item.plateCandidates = dedupedCandidates
+    item.ocrProcessed = true
+
+    if (result.plate) {
+      item.draft.plate = normalizePlate(result.plate)
+      item.ocrSuccess = true
+      // Fetch FIPE in background
+      try {
+        const lookup = await api.lookupPlateAndFipe({ plate: item.draft.plate })
+        const { result: fipeResult } = lookup
+        item.draft.brand = String(fipeResult.brand || '').trim()
+        item.draft.model = String(fipeResult.model || '').trim()
+        item.draft.year = typeof fipeResult.year === 'number' ? fipeResult.year : null
+        item.draft.fipeValue = Number(fipeResult.fipeValue) || 0
+        item.targetMarginValue = suggestMarginByFipe(item.draft.fipeValue)
+        item.draft.costs = getDefaultCosts()
+      } catch {
+        // FIPE failed but plate was found — still mark ready
+      }
+    } else {
+      item.ocrSuccess = false
+    }
+
+    item.status = 'ready'
+  } catch {
+    item.ocrProcessed = true
+    item.ocrSuccess = false
+    item.status = 'error'
+  }
 }
 
 const extractPlateFromPhoto = async () => {
@@ -1004,7 +1107,7 @@ const extractPlateFromPhoto = async () => {
 
     const candidates = Array.isArray(result.candidates) ? result.candidates : []
     const dedupedCandidates = Array.from(
-      new Set(candidates.map((item) => normalizePlate(item?.plate || '')).filter(Boolean)),
+      new Set(candidates.map((item: { plate?: string }) => normalizePlate(item?.plate || '')).filter(Boolean)),
     )
     plateCandidates.value = dedupedCandidates
     ocrBestScore.value = Number(candidates[0]?.confidence ?? result.confidence ?? 0)
@@ -1174,7 +1277,15 @@ const saveAndGoToStep3 = async () => {
   draft.createdAt = record.createdAt
   await reloadLocal()
 
+  // Remove the saved item from queue
+  if (activeQueueId.value) {
+    const qi = draftQueue.value.findIndex(i => i.draft.id === activeQueueId.value)
+    if (qi !== -1) draftQueue.value.splice(qi, 1)
+    activeQueueId.value = null
+  }
+
   setStatus(`Carro salvo com sucesso!`, 'ok')
+  justSaved.value = true
   currentStep.value = 3
   window.scrollTo({ top: 0, behavior: 'smooth' })
 }
