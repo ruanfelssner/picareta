@@ -188,8 +188,34 @@
           <div class="rounded-xl bg-slate-50 p-4">
             <div class="grid grid-cols-2 gap-4">
               <div>
-                <p class="text-xs font-semibold uppercase tracking-wider text-slate-500">Placa</p>
-                <p class="mt-1 text-lg font-bold text-slate-900">{{ draft.plate || '-' }}</p>
+                <div class="flex items-center justify-between gap-2">
+                  <p class="text-xs font-semibold uppercase tracking-wider text-slate-500">Placa</p>
+                  <button
+                    class="rounded-lg border border-slate-300 px-2 py-1 text-[11px] font-semibold text-slate-700 hover:bg-slate-100"
+                    type="button"
+                    @click="togglePlateEdit"
+                  >
+                    {{ editingPlate ? 'Fechar' : 'Editar' }}
+                  </button>
+                </div>
+                <p v-if="!editingPlate" class="mt-1 text-lg font-bold text-slate-900">{{ draft.plate || '-' }}</p>
+                <div v-else class="mt-1 space-y-2">
+                  <input
+                    :value="draft.plate"
+                    class="field-input uppercase"
+                    maxlength="8"
+                    placeholder="AAA0A00"
+                    @input="onPlateInput"
+                  >
+                  <button
+                    class="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+                    type="button"
+                    :disabled="loadingLookup || !draft.plate"
+                    @click="lookupCurrentPlate"
+                  >
+                    {{ loadingLookup ? 'Consultando...' : 'Consultar novamente' }}
+                  </button>
+                </div>
               </div>
               <div>
                 <p class="text-xs font-semibold uppercase tracking-wider text-slate-500">Ano</p>
@@ -678,6 +704,7 @@ const newCostOtherLabel = ref('')
 const currentStep = ref(1)
 const ocrProcessed = ref(false)
 const ocrSuccess = ref(false)
+const editingPlate = ref(false)
 const editingMargin = ref(false)
 const editingFipe = ref(false)
 const editingBrandModel = ref(false)
@@ -766,6 +793,22 @@ const setStatus = (message: string, tone: 'ok' | 'warn' | 'error' = 'ok') => {
   statusTone.value = tone
 }
 
+const syncActiveQueueDraft = () => {
+  if (!activeQueueId.value) return
+  const index = draftQueue.value.findIndex((item) => item.draft.id === activeQueueId.value)
+  if (index === -1) return
+
+  const current = draftQueue.value[index]
+  current.draft = {
+    ...draft,
+    costs: draft.costs.map((cost) => ({ ...cost })),
+  }
+  current.targetMarginValue = targetMarginValue.value
+  current.plateCandidates = [...plateCandidates.value]
+  current.ocrProcessed = ocrProcessed.value
+  current.ocrSuccess = ocrSuccess.value
+}
+
 const applyQuotaInfo = (quota?: PlateFipeQuotaInfo) => {
   if (!quota) return
   plateFipeQuota.value = quota
@@ -835,6 +878,7 @@ const loadFromQueue = (index: number) => {
   plateCandidates.value = item.plateCandidates
   targetMarginValue.value = item.targetMarginValue || suggestMarginByFipe(item.draft.fipeValue)
   marginWasEdited.value = item.draft.fipeValue > 0
+  editingPlate.value = false
   editingMargin.value = false
   editingFipe.value = false
   editingBrandModel.value = false
@@ -847,6 +891,10 @@ const loadFromQueue = (index: number) => {
 
 const removeFromQueue = (index: number) => {
   draftQueue.value.splice(index, 1)
+}
+
+const togglePlateEdit = () => {
+  editingPlate.value = !editingPlate.value
 }
 
 const toggleMarginEdit = () => {
@@ -963,6 +1011,7 @@ const clearDraft = () => {
   ocrSuccess.value = false
   targetMarginValue.value = 10000
   marginWasEdited.value = false
+  editingPlate.value = false
   editingMargin.value = false
   editingFipe.value = false
   editingBrandModel.value = false
@@ -982,6 +1031,7 @@ const clearDraft = () => {
 const onPlateInput = (event: Event) => {
   const input = event.target as HTMLInputElement
   draft.plate = normalizePlate(input.value)
+  syncActiveQueueDraft()
 }
 
 const readErrorMessage = (error: unknown) => {
@@ -1052,6 +1102,7 @@ const lookupVehicleByPlate = async (plate: string) => {
     return
   }
 
+  draft.plate = normalizedPlate
   loadingLookup.value = true
   try {
     const lookup = await api.lookupPlateAndFipe({ plate: normalizedPlate })
@@ -1076,6 +1127,7 @@ const lookupVehicleByPlate = async (plate: string) => {
   } catch (error) {
     setStatus(`Placa ${normalizedPlate} identificada, mas falhou consulta FIPE: ${readErrorMessage(error)}`, 'warn')
   } finally {
+    syncActiveQueueDraft()
     loadingLookup.value = false
     void refreshPlateFipeQuota()
   }
@@ -1413,6 +1465,7 @@ const loadFromLocal = (record: AuctionCarRecord) => {
   const restoredTarget = record.fipeValue > 0 ? (record.targetMarginPercent / 100) * record.fipeValue : 0
   targetMarginValue.value = restoredTarget > 0 ? restoredTarget : suggestMarginByFipe(record.fipeValue)
   marginWasEdited.value = true
+  editingPlate.value = false
 
   setStatus('Registro carregado para edicao.', 'ok')
 }
