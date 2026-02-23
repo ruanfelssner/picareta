@@ -140,11 +140,13 @@ Principais:
 
 - `FLASK_PORT`: Porta do serviço Flask (default: 5000)
 - `NUXT_FLASK_BASE_URL`: URL base do Flask usada pelo servidor Nuxt (default: http://127.0.0.1:5000). Em deploy unico, nao use o dominio publico do Nuxt para evitar loop de requisicao.
-- `NUXT_FLASK_TIMEOUT_MS`: timeout da chamada OCR Flask em ms (default: 120000)
+- `NUXT_FLASK_TIMEOUT_MS`: timeout da chamada OCR Flask em ms (default: 45000)
 - `NUXT_MONGO_URI`: Connection string do MongoDB
 - `NUXT_PLACA_FIPE_BASE_URL`: base URL do provider de placa/FIPE
 - `NUXT_PLACA_FIPE_TOKEN`: token de autorizacao do provider
 - `NUXT_PLACA_FIPE_MOCK`: quando `true`, usa resposta mock local e nao consome a API externa
+
+Obs.: tuning de OCR e Gunicorn usa perfil fixo no codigo (producao), sem necessidade de configurar env adicional.
 
 ### Exemplo de configuracao para API oficial
 

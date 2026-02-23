@@ -15,4 +15,9 @@ Criar uma estrutura para utilizar indexedDB de front/api em nuxt para poder cada
 
 ## Regras de arquitetura (resumo)
 
+## Diretrizes operacionais
+
+- Evitar criar novas env vars para tuning de OCR/Gunicorn.
+- Parametros de performance de producao devem ficar fixos no codigo (zero-config em PRD).
+
 ## Nomenclaturas

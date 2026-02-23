@@ -162,7 +162,7 @@
           </div>
 
             <div v-else class="mt-2 inline-flex rounded-md bg-white/90 px-2 py-1 text-xs font-semibold text-slate-700">
-              Sem sugestao OCR para esta foto.
+              {{ queuePreviewItem.errorMessage || 'Sem sugestao OCR para esta foto.' }}
             </div>
           </div>
         </div>
@@ -1912,6 +1912,7 @@ const processQueueItemAsync = async (index: number) => {
     const secondScore = Number(candidates[1]?.confidence ?? 0)
     const nearTie = dedupedCandidates.length > 1 && Math.abs(bestScore - secondScore) <= 0.06
     const engineAmbiguous = Boolean(result.engine?.ambiguous_top_pair)
+    const timeoutReached = Number(result.engine?.timings_ms?.timeout_reached ?? 0) > 0
 
     item.ocrRequestId = String(response.requestId || '')
     item.ocrTimingsMs = result.engine?.timings_ms || {}
@@ -1973,7 +1974,11 @@ const processQueueItemAsync = async (index: number) => {
       item.needsPlateConfirmation = dedupedCandidates.length > 0
       item.errorMessage = dedupedCandidates.length > 0
         ? `OCR sem placa final. Candidatos: ${dedupedCandidates.slice(0, 3).join(', ')}`
-        : 'OCR nao identificou placa na imagem.'
+        : (
+            timeoutReached
+              ? 'OCR atingiu limite de tempo. Tente foto mais aproximada da placa.'
+              : 'OCR nao identificou placa na imagem.'
+          )
     }
 
     markQueueProcessingFinished(item, 'ready')
@@ -2015,6 +2020,7 @@ const extractPlateFromPhoto = async () => {
     const secondScore = Number(candidates[1]?.confidence ?? 0)
     const nearTie = dedupedCandidates.length > 1 && Math.abs(bestScore - secondScore) <= 0.06
     const engineAmbiguous = Boolean(result.engine?.ambiguous_top_pair)
+    const timeoutReached = Number(result.engine?.timings_ms?.timeout_reached ?? 0) > 0
     const ocrDurationMs = Number(result.engine?.timings_ms?.total_ms || 0) || measuredOcrMs
     rawPlateCandidates.value = rawCandidates
     plateCandidates.value = dedupedCandidates
@@ -2055,7 +2061,8 @@ const extractPlateFromPhoto = async () => {
     ocrSuccess.value = false
     const topCandidates = dedupedCandidates.slice(0, 3)
     const candidatesHint = topCandidates.length > 0 ? ` Candidatos: ${topCandidates.join(', ')}.` : ''
-    setStatus(`OCR com baixa confiança em ${formatElapsedMs(ocrDurationMs)}.` + candidatesHint, 'warn')
+    const timeoutHint = timeoutReached ? ' OCR atingiu limite de tempo.' : ''
+    setStatus(`OCR com baixa confiança em ${formatElapsedMs(ocrDurationMs)}.${timeoutHint}` + candidatesHint, 'warn')
   } catch (error) {
     ocrProcessed.value = true
     ocrSuccess.value = false

@@ -22,7 +22,7 @@ export default defineEventHandler(async (event) => {
 
   const runtimeConfig = useRuntimeConfig(event)
   const base = resolveFlaskBaseUrl(event, runtimeConfig)
-  const timeout = Number(runtimeConfig.flaskTimeoutMs) || 120000
+  const timeout = Number(runtimeConfig.flaskTimeoutMs) || 45000
 
   try {
     return await $fetch(`${base}/api/v1/plate/recognize`, {

@@ -3,7 +3,7 @@ import { resolveFlaskBaseUrl } from '@core/server/utils/flask'
 export default defineEventHandler(async (event) => {
   const runtimeConfig = useRuntimeConfig(event)
   const base = resolveFlaskBaseUrl(event, runtimeConfig)
-  const timeout = Math.min(Number(runtimeConfig.flaskTimeoutMs) || 120000, 5000)
+  const timeout = Math.min(Number(runtimeConfig.flaskTimeoutMs) || 45000, 5000)
 
   try {
     const upstream = await $fetch<Record<string, unknown>>(`${base}/`, {

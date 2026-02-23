@@ -17,7 +17,7 @@ export default defineNuxtConfig({
       process.env.NUXT_PUBLIC_FLASK_BASE_URL ||
       'http://127.0.0.1:5000',
     flaskTimeoutMs: Number(
-      process.env.NUXT_FLASK_TIMEOUT_MS || process.env.NUXT_PUBLIC_FLASK_TIMEOUT_MS || 120000,
+      process.env.NUXT_FLASK_TIMEOUT_MS || process.env.NUXT_PUBLIC_FLASK_TIMEOUT_MS || 45000,
     ),
     mongoUri: '',
     mongoDbName: 'picareta',

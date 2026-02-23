@@ -37,14 +37,21 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 TEST_DIR = os.path.abspath(os.path.join(BASE_DIR, "..", "data", "test"))
 ALLOWED_EXT = {".jpg", ".jpeg", ".png", ".webp"}
 MAX_IMAGE_BYTES = int(os.environ.get("MAX_IMAGE_BYTES", 12 * 1024 * 1024))
-MAX_PROCESS_SIDE = int(os.environ.get("PLATE_OCR_MAX_SIDE", 1440))
-OCR_STRONG_CONFIDENCE = float(os.environ.get("PLATE_OCR_STRONG_CONFIDENCE", 0.72))
-OCR_MAX_FALLBACK_REGIONS = int(os.environ.get("PLATE_OCR_MAX_FALLBACK_REGIONS", 4))
-OCR_UPSCALE_MAX_SIDE = int(os.environ.get("PLATE_OCR_UPSCALE_MAX_SIDE", 900))
-OCR_PREPROCESS_MAX_PIXELS = int(os.environ.get("PLATE_OCR_PREPROCESS_MAX_PIXELS", 1_400_000))
-OCR_PRELOAD_MODELS = os.environ.get("PLATE_OCR_PRELOAD_MODELS", "false").lower() in ("1", "true", "yes")
-OCR_AMBIGUOUS_DELTA = float(os.environ.get("PLATE_OCR_AMBIGUOUS_DELTA", 0.06))
-OCR_ZERO_PRIORITY_DELTA = float(os.environ.get("PLATE_OCR_ZERO_PRIORITY_DELTA", 0.05))
+# Perfil padrao de producao (fixo em codigo, sem dependencia de env de tuning).
+MAX_PROCESS_SIDE = 1280
+OCR_STRONG_CONFIDENCE = 0.72
+OCR_MAX_FALLBACK_REGIONS = 3
+OCR_UPSCALE_MAX_SIDE = 840
+OCR_PREPROCESS_MAX_PIXELS = 1_000_000
+OCR_PRELOAD_MODELS = True
+OCR_AMBIGUOUS_DELTA = 0.06
+OCR_ZERO_PRIORITY_DELTA = 0.05
+OCR_MAX_PROCESS_MS = 30_000
+OCR_MAX_VARIANTS = 2
+OCR_NO_YOLO_MAX_FALLBACK_REGIONS = 2
+OCR_MIN_TEXT_CONFIDENCE = 0.18
+OCR_YOLO_IMGSZ = 640
+OCR_YOLO_MAX_DET = 3
 PLATE_REGEX = re.compile(r"^[A-Z]{3}[0-9][A-Z0-9][0-9]{2}$")
 TEMPLATE_OLD = "LLLDDDD"
 TEMPLATE_MERCOSUL = "LLLDLDD"
@@ -82,6 +89,10 @@ _ocr_error = None
 _yolo_model = None
 _yolo_error = None
 _yolo_model_path = None
+
+
+def _is_deadline_reached(deadline_at: Optional[float]) -> bool:
+    return deadline_at is not None and perf_counter() >= deadline_at
 
 
 def list_test_images():
@@ -395,6 +406,7 @@ def _ocr_scan(
     source: str,
     offset: Tuple[int, int] = (0, 0),
     source_confidence: Optional[float] = None,
+    deadline_at: Optional[float] = None,
 ) -> List[Dict]:
     reader, err = get_ocr_reader()
     if err:
@@ -432,7 +444,12 @@ def _ocr_scan(
                 )[:, :, ::-1]
                 variants.append((upscaled_preprocessed, 0.07))
 
+    if OCR_MAX_VARIANTS > 0:
+        variants = variants[:OCR_MAX_VARIANTS]
+
     for variant_index, (variant, variant_boost) in enumerate(variants):
+        if _is_deadline_reached(deadline_at):
+            break
         try:
             read = reader.readtext(
                 variant,
@@ -446,6 +463,8 @@ def _ocr_scan(
             continue
 
         for box, text, conf in read:
+            if float(conf) < OCR_MIN_TEXT_CONFIDENCE and not source.startswith("yolo"):
+                continue
             matches = extract_plate_candidates(text)
             if not matches:
                 continue
@@ -473,6 +492,8 @@ def _ocr_scan(
                     "normalization_penalty": penalty,
                     "pattern": match["pattern"],
                 })
+        if _has_strong_candidate(detections):
+            break
     return detections
 
 
@@ -588,6 +609,8 @@ def _prioritize_zero_last_digit(candidates: List[Dict]) -> Tuple[List[Dict], boo
 
 def recognize_plate(img: Image.Image) -> dict:
     started = perf_counter()
+    deadline_at = (started + (OCR_MAX_PROCESS_MS / 1000.0)) if OCR_MAX_PROCESS_MS > 0 else None
+    timeout_reached = False
     np_img_original = np.array(img.convert("RGB"))
     height, width = np_img_original.shape[:2]
     np_img_rgb, process_scale = _resize_for_processing(np_img_original)
@@ -598,14 +621,24 @@ def recognize_plate(img: Image.Image) -> dict:
     timings = {}
 
     yolo_model, yolo_model_path, yolo_err = get_yolo_model()
-    if yolo_model is not None:
+    if yolo_model is not None and not _is_deadline_reached(deadline_at):
         yolo_started = perf_counter()
         try:
-            yolo_result = yolo_model.predict(np_img_rgb, conf=0.12, imgsz=640, max_det=4, verbose=False)
+            yolo_result = yolo_model.predict(
+                np_img_rgb,
+                conf=0.12,
+                imgsz=OCR_YOLO_IMGSZ,
+                max_det=OCR_YOLO_MAX_DET,
+                verbose=False,
+            )
             pipeline.append("yolo_plate_crop")
             if yolo_result and len(yolo_result[0].boxes) > 0:
                 boxes = yolo_result[0].boxes
                 for index, box in enumerate(boxes):
+                    if _is_deadline_reached(deadline_at):
+                        timeout_reached = True
+                        pipeline.append("deadline_reached:yolo_boxes")
+                        break
                     x1, y1, x2, y2 = [int(v) for v in box.xyxy[0].tolist()]
                     pad = max(8, int(0.03 * max(proc_width, proc_height)))
                     x1 = max(0, x1 - pad)
@@ -621,6 +654,7 @@ def recognize_plate(img: Image.Image) -> dict:
                         source=f"yolo_box_{index}",
                         offset=(x1, y1),
                         source_confidence=conf,
+                        deadline_at=deadline_at,
                     )
                     candidates.extend(crop_candidates)
 
@@ -634,21 +668,38 @@ def recognize_plate(img: Image.Image) -> dict:
     else:
         pipeline.append("yolo_unavailable")
 
-    if not candidates:
+    if not candidates and not _is_deadline_reached(deadline_at):
         fallback_started = perf_counter()
         pipeline.append("fallback_ocr_regions")
         regions = _fallback_regions(np_img_rgb)
         if OCR_MAX_FALLBACK_REGIONS > 0:
             regions = regions[:OCR_MAX_FALLBACK_REGIONS]
+        if yolo_model is None and OCR_NO_YOLO_MAX_FALLBACK_REGIONS > 0:
+            regions = regions[:OCR_NO_YOLO_MAX_FALLBACK_REGIONS]
 
         for region_name, region_img, offset in regions:
-            region_candidates = _ocr_scan(region_img, source=region_name, offset=offset)
+            if _is_deadline_reached(deadline_at):
+                timeout_reached = True
+                pipeline.append("deadline_reached:fallback_regions")
+                break
+            region_candidates = _ocr_scan(
+                region_img,
+                source=region_name,
+                offset=offset,
+                deadline_at=deadline_at,
+            )
             candidates.extend(region_candidates)
             if _has_strong_candidate(region_candidates):
                 pipeline.append(f"fallback_short_circuit:{region_name}")
                 break
 
         timings["fallback_ms"] = int(round((perf_counter() - fallback_started) * 1000))
+    elif not candidates and _is_deadline_reached(deadline_at):
+        timeout_reached = True
+        pipeline.append("deadline_reached:before_fallback")
+
+    if _is_deadline_reached(deadline_at):
+        timeout_reached = True
 
     deduped = _dedupe_candidates(candidates, proc_width, proc_height)
     deduped, zero_priority_applied = _prioritize_zero_last_digit(deduped)
@@ -663,6 +714,8 @@ def recognize_plate(img: Image.Image) -> dict:
         pipeline.append("ambiguous_top_pair")
 
     timings["total_ms"] = int(round((perf_counter() - started) * 1000))
+    timings["max_process_ms"] = OCR_MAX_PROCESS_MS
+    timings["timeout_reached"] = 1 if timeout_reached else 0
 
     return {
         "plate": best["plate"] if best else None,
