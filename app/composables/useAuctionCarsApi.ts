@@ -1,4 +1,8 @@
-import type { AuctionCarRecord, PlateLookupResult } from '@core/shared/types/auction'
+import type {
+  AuctionCarRecord,
+  PlateFipeQuotaInfo,
+  PlateLookupResponse,
+} from '@core/shared/types/auction'
 
 type PlateRecognitionCandidate = {
   plate: string
@@ -43,12 +47,16 @@ export function useAuctionCarsApi() {
     })
 
   const lookupPlateAndFipe = async (payload: { plate: string }) =>
-    $fetch<{
-      result: PlateLookupResult
-      warning?: string
-    }>('/api/v1/plate-fipe/lookup', {
+    $fetch<PlateLookupResponse>('/api/v1/plate-fipe/lookup', {
       method: 'POST',
       body: payload,
+    })
+
+  const getPlateFipeQuotas = async () =>
+    $fetch<{
+      quota: PlateFipeQuotaInfo
+    }>('/api/v1/plate-fipe/quotas', {
+      method: 'GET',
     })
 
   const extractPlateFromImage = async (payload: {
@@ -79,6 +87,7 @@ export function useAuctionCarsApi() {
     saveRemoteCar,
     deleteRemoteCar,
     lookupPlateAndFipe,
+    getPlateFipeQuotas,
     extractPlateFromImage,
   }
 }

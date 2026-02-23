@@ -50,5 +50,5 @@ Colocar o app para uso real no celular, com cadastro e analise de margem em pouc
 
 - Definir `.env` com `NUXT_PUBLIC_SITE_URL`.
 - Se usar sync, configurar `NUXT_MONGO_URI` e `NUXT_MONGO_DB_NAME`.
-- Se usar integracao real, configurar `NUXT_PLACA_FIPE_*`.
+- Se usar integracao real, configurar `NUXT_PLACA_FIPE_BASE_URL` e `NUXT_PLACA_FIPE_TOKEN`.
 - Executar `pnpm dev` e abrir no celular na mesma rede local.

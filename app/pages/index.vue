@@ -25,7 +25,7 @@
       <div class="mx-auto max-w-md">
         <p class="mb-1.5 text-center text-xs text-slate-400">Fila ({{ draftQueue.length }}) &mdash; toque no pronto para preencher</p>
         <div class="flex gap-2 overflow-x-auto pb-1">
-          <button
+          <div
             v-for="(item, idx) in draftQueue"
             :key="item.draft.id"
             class="relative shrink-0 rounded-xl border-2 p-1 text-left transition-colors"
@@ -34,7 +34,6 @@
               'border-slate-600 bg-slate-800 hover:border-slate-400 cursor-pointer': item.status === 'ready' && item.draft.id !== activeQueueId,
               'border-slate-700 bg-slate-800 cursor-default opacity-70': item.status !== 'ready',
             }"
-            type="button"
             @click="item.status === 'ready' && loadFromQueue(idx)"
           >
             <div class="relative">
@@ -57,7 +56,7 @@
               </div>
             </div>
             <p
-class="mt-1 max-w-[56px] truncate text-center text-xs font-semibold"
+              class="mt-1 max-w-[56px] truncate text-center text-xs font-semibold"
               :class="item.draft.id === activeQueueId ? 'text-white' : 'text-slate-300'"
             >
               {{ item.status === 'processing' ? '...' : (item.draft.plate || '???') }}
@@ -82,7 +81,7 @@ class="mt-1 max-w-[56px] truncate text-center text-xs font-semibold"
             >
               <svg class="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M6 18L18 6M6 6l12 12" /></svg>
             </button>
-          </button>
+          </div>
         </div>
       </div>
     </div>
@@ -102,6 +101,33 @@ class="mt-1 max-w-[56px] truncate text-center text-xs font-semibold"
           }"
         >
           {{ statusMessage }}
+        </div>
+
+        <div class="mt-3 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+          <div class="flex items-center justify-between gap-3">
+            <div>
+              <p class="text-xs font-semibold uppercase tracking-wider text-slate-500">Buscas restantes hoje</p>
+              <p class="mt-1 text-2xl font-bold text-slate-900">
+                {{ plateFipeQuota?.remainingToday ?? '-' }}
+                <span class="text-sm font-semibold text-slate-500">
+                  / {{ plateFipeQuota?.dailyLimit ?? '-' }}
+                </span>
+              </p>
+            </div>
+            <button
+              class="rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-60"
+              type="button"
+              :disabled="plateFipeQuotaLoading"
+              @click="refreshPlateFipeQuota"
+            >
+              {{ plateFipeQuotaLoading ? 'Atualizando...' : 'Atualizar' }}
+            </button>
+          </div>
+          <p class="mt-1 text-xs text-slate-500">
+            Usadas hoje: {{ plateFipeQuota?.usedToday ?? '-' }}.
+            <span v-if="plateFipeQuotaError" class="text-rose-600">{{ plateFipeQuotaError }}</span>
+            <span v-else>{{ plateFipeQuota?.mensagem || 'Sem retorno de quota ainda.' }}</span>
+          </p>
         </div>
 
         <div class="mt-4">
@@ -530,7 +556,7 @@ import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useAuctionCarsApi } from '~/composables/useAuctionCarsApi'
 import { useIndexedAuctionCars } from '~/composables/useIndexedAuctionCars'
 import { calculateAuctionSummary, calculateTotalCosts, normalizePlate } from '@core/shared/valuation'
-import type { AuctionCarRecord, CostItem } from '@core/shared/types/auction'
+import type { AuctionCarRecord, CostItem, PlateFipeQuotaInfo } from '@core/shared/types/auction'
 
 type DraftQueueItem = {
   draft: DraftState
@@ -637,6 +663,9 @@ const statusTone = ref<'ok' | 'warn' | 'error'>('ok')
 const plateCandidates = ref<string[]>([])
 const ocrBestScore = ref(0)
 const ocrSecondScore = ref(0)
+const plateFipeQuota = ref<PlateFipeQuotaInfo | null>(null)
+const plateFipeQuotaLoading = ref(false)
+const plateFipeQuotaError = ref('')
 
 const targetMarginValue = ref(10000)
 const marginWasEdited = ref(false)
@@ -735,6 +764,12 @@ watch(
 const setStatus = (message: string, tone: 'ok' | 'warn' | 'error' = 'ok') => {
   statusMessage.value = message
   statusTone.value = tone
+}
+
+const applyQuotaInfo = (quota?: PlateFipeQuotaInfo) => {
+  if (!quota) return
+  plateFipeQuota.value = quota
+  plateFipeQuotaError.value = ''
 }
 
 const formatMoney = (value: number) => moneyFormatter.format(Number(value) || 0)
@@ -988,6 +1023,20 @@ const readErrorMessage = (error: unknown) => {
   return 'Falha na operacao.'
 }
 
+const refreshPlateFipeQuota = async () => {
+  plateFipeQuotaLoading.value = true
+  plateFipeQuotaError.value = ''
+
+  try {
+    const response = await api.getPlateFipeQuotas()
+    applyQuotaInfo(response.quota)
+  } catch (error) {
+    plateFipeQuotaError.value = readErrorMessage(error)
+  } finally {
+    plateFipeQuotaLoading.value = false
+  }
+}
+
 const applyPlateCandidate = async (candidate: string) => {
   const normalized = normalizePlate(candidate)
   if (!normalized) return
@@ -1006,24 +1055,29 @@ const lookupVehicleByPlate = async (plate: string) => {
   loadingLookup.value = true
   try {
     const lookup = await api.lookupPlateAndFipe({ plate: normalizedPlate })
-    const { result, warning } = lookup
+    const { result, warning, detail, quota, cache } = lookup
+    applyQuotaInfo(quota)
 
     draft.brand = String(result.brand || '').trim()
     draft.model = String(result.model || '').trim()
     draft.year = typeof result.year === 'number' ? result.year : null
     draft.fipeValue = Number(result.fipeValue) || 0
 
-    if (warning) {
-      setStatus(`Placa ${normalizedPlate} identificada. ${warning}`, 'warn')
+    const cacheHint = cache.hit ? ' (cache, sem custo adicional).' : ''
+    const providerWarning = [warning, detail].filter(Boolean).join(' ')
+
+    if (providerWarning) {
+      setStatus(`Placa ${normalizedPlate} identificada. ${providerWarning}${cacheHint}`, 'warn')
     } else if (draft.fipeValue <= 0) {
-      setStatus(`Placa ${normalizedPlate} identificada, mas sem valor FIPE no retorno.`, 'warn')
+      setStatus(`Placa ${normalizedPlate} identificada, mas sem valor FIPE no retorno.${cacheHint}`, 'warn')
     } else {
-      setStatus(`Placa ${normalizedPlate} consultada com sucesso.`, 'ok')
+      setStatus(`Placa ${normalizedPlate} consultada com sucesso${cacheHint}`, 'ok')
     }
   } catch (error) {
     setStatus(`Placa ${normalizedPlate} identificada, mas falhou consulta FIPE: ${readErrorMessage(error)}`, 'warn')
   } finally {
     loadingLookup.value = false
+    void refreshPlateFipeQuota()
   }
 }
 
@@ -1098,19 +1152,29 @@ const processQueueItemAsync = async (index: number) => {
       // Fetch FIPE in background
       try {
         const lookup = await api.lookupPlateAndFipe({ plate: item.draft.plate })
-        const { result: fipeResult } = lookup
+        const { result: fipeResult, warning, detail, quota } = lookup
+        applyQuotaInfo(quota)
         item.draft.brand = String(fipeResult.brand || '').trim()
         item.draft.model = String(fipeResult.model || '').trim()
         item.draft.year = typeof fipeResult.year === 'number' ? fipeResult.year : null
         item.draft.fipeValue = Number(fipeResult.fipeValue) || 0
         item.targetMarginValue = suggestMarginByFipe(item.draft.fipeValue)
         item.draft.costs = getDefaultCosts()
+        const providerWarning = [warning, detail].filter(Boolean).join(' ')
+        if (providerWarning) {
+          item.errorMessage = providerWarning
+        } else if (!item.draft.brand && !item.draft.model && item.draft.fipeValue <= 0) {
+          item.errorMessage = 'Consulta retornou sem marca/modelo/FIPE.'
+        }
       } catch (err: unknown) {
         // FIPE failed but plate was found — still mark ready, warn via errorMessage
         item.errorMessage = `FIPE: ${readErrorMessage(err)}`
       }
     } else {
       item.ocrSuccess = false
+      item.errorMessage = dedupedCandidates.length > 0
+        ? `OCR sem placa final. Candidatos: ${dedupedCandidates.slice(0, 3).join(', ')}`
+        : 'OCR nao identificou placa na imagem.'
     }
 
     item.status = 'ready'
@@ -1365,6 +1429,8 @@ const removeLocal = async (id: string) => {
 }
 
 onMounted(async () => {
+  await refreshPlateFipeQuota()
+
   if (!indexedDb.isSupported) {
     setStatus('Este navegador nao suporta IndexedDB.', 'warn')
     return

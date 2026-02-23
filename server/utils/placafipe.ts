@@ -1,218 +1,367 @@
 import { createError } from 'h3'
-import type { PlateFipeDetails } from '@core/shared/types/auction'
+import { normalizePlate } from '@core/shared/valuation'
+import type {
+  PlateFipeDetails,
+  PlateFipeMatch,
+  PlateFipeQuotaInfo,
+  PlateLookupResult,
+} from '@core/shared/types/auction'
 
-const stripTags = (value: string) => value.replace(/<[^>]*>/g, ' ')
+type PlacafipePayload = Record<string, unknown>
 
-const decodeEntities = (value: string) => {
-  const namedMap: Record<string, string> = {
-    nbsp: ' ',
-    amp: '&',
-    quot: '"',
-    apos: "'",
-    lt: '<',
-    gt: '>',
-    aacute: 'á',
-    eacute: 'é',
-    iacute: 'í',
-    oacute: 'ó',
-    uacute: 'ú',
-    acirc: 'â',
-    ecirc: 'ê',
-    ocirc: 'ô',
-    atilde: 'ã',
-    otilde: 'õ',
-    ccedil: 'ç',
-    auml: 'ä',
-    euml: 'ë',
-    iuml: 'ï',
-    ouml: 'ö',
-    uuml: 'ü',
+type RequestContext = {
+  baseUrl: string
+  token: string
+  timeout?: number
+}
+
+const DEFAULT_TIMEOUT_MS = 12000
+
+const toRecord = (value: unknown): PlacafipePayload => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
+  return value as PlacafipePayload
+}
+
+const toStringSafe = (value: unknown) => (value == null ? '' : String(value).trim())
+
+const toNumberOrNull = (value: unknown) => {
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (typeof value !== 'string') return null
+
+  const sanitized = value.replace(/[^0-9,.-]/g, '').trim()
+  if (!sanitized) return null
+
+  const lastComma = sanitized.lastIndexOf(',')
+  const lastDot = sanitized.lastIndexOf('.')
+
+  let normalized = sanitized
+  if (lastComma >= 0 && lastDot >= 0) {
+    normalized =
+      lastComma > lastDot
+        ? sanitized.replace(/\./g, '').replace(',', '.')
+        : sanitized.replace(/,/g, '')
+  } else if (lastComma >= 0) {
+    normalized = sanitized.replace(',', '.')
   }
 
-  const partiallyDecoded = value
-    .replace(/&nbsp;/gi, ' ')
-    .replace(/&amp;/gi, '&')
-    .replace(/&quot;/gi, '"')
-    .replace(/&#39;/gi, "'")
-    .replace(/&lt;/gi, '<')
-    .replace(/&gt;/gi, '>')
-
-  return partiallyDecoded
-    .replace(/&#(\d+);/g, (entity, code) => {
-      const parsed = Number(code)
-      return Number.isFinite(parsed) ? String.fromCodePoint(parsed) : entity
-    })
-    .replace(/&#x([0-9a-f]+);/gi, (entity, hex) => {
-      const parsed = Number.parseInt(hex, 16)
-      return Number.isFinite(parsed) ? String.fromCodePoint(parsed) : entity
-    })
-    .replace(/&([a-z]+);/gi, (entity, name) => namedMap[name.toLowerCase()] ?? entity)
-}
-
-const cleanText = (value: string) => decodeEntities(stripTags(value)).replace(/\s+/g, ' ').trim()
-
-const normalizeLabel = (value: string) =>
-  value
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .toLowerCase()
-    .replace(/[^a-z0-9 ]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-
-const parseNumber = (value: string) => {
-  const match = value.match(/-?\d+/)
-  return match ? Number(match[0]) : null
-}
-
-const parseMoney = (value: string) => {
-  const normalized = value.replace(/\./g, '').replace(',', '.').replace(/[^0-9.-]/g, '')
   const parsed = Number(normalized)
   return Number.isFinite(parsed) ? parsed : null
 }
 
-const toDetails = (raw: Record<string, string>): PlateFipeDetails => ({
-  marca: raw.marca || '',
-  modelo: raw.modelo || '',
-  importado: raw.importado || '',
-  ano: parseNumber(raw.ano || ''),
-  anoModelo: parseNumber(raw['ano modelo'] || ''),
-  cor: raw.cor || '',
-  cilindrada: raw.cilindrada || '',
-  potencia: raw.potencia || '',
-  combustivel: raw.combustivel || '',
-  chassi: raw.chassi || '',
-  motor: raw.motor || '',
-  passageiros: parseNumber(raw.passageiros || ''),
-  uf: raw.uf || '',
-  municipio: raw.municipio || '',
-  raw,
-})
-
-const extractTableRows = (html: string) => {
-  const tableMatch = html.match(/<table[^>]*class=['"][^'"]*fipeTablePriceDetail[^'"]*['"][^>]*>([\s\S]*?)<\/table>/i)
-
-  if (!tableMatch?.[1]) {
-    return null
+const toBooleanOrNull = (value: unknown) => {
+  if (typeof value === 'boolean') return value
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase()
+    if (normalized === 'true' || normalized === '1') return true
+    if (normalized === 'false' || normalized === '0') return false
   }
-
-  const tableContent = tableMatch[1]
-  const rows = [...tableContent.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/gi)]
-  const result: Record<string, string> = {}
-
-  for (const rowMatch of rows) {
-    const rowHtml = rowMatch[1] || ''
-    const cells = [...rowHtml.matchAll(/<td[^>]*>([\s\S]*?)<\/td>/gi)]
-
-    if (cells.length < 2) continue
-
-    const rawLabel = cleanText(cells[0]?.[1] || '').replace(/:$/, '')
-    const rawValue = cleanText(cells[1]?.[1] || '')
-    const label = normalizeLabel(rawLabel)
-
-    if (!label) continue
-    result[label] = rawValue
-  }
-
-  return Object.keys(result).length > 0 ? result : null
-}
-
-const extractFipeValue = (html: string) => {
-  const contextual = html.match(/(?:valor|preco|preço)[^\n<]{0,80}fipe[\s\S]{0,80}?R\$\s*([0-9.,]+)/i)
-  if (contextual?.[1]) {
-    return parseMoney(contextual[1])
-  }
-
-  const generic = html.match(/R\$\s*([0-9.,]+)/i)
-  if (generic?.[1]) {
-    return parseMoney(generic[1])
-  }
-
   return null
 }
 
-const isCloudflareBlock = (html: string) => {
-  const text = html.toLowerCase()
-  return (
-    text.includes('attention required! | cloudflare') ||
-    text.includes('sorry, you have been blocked') ||
-    text.includes('performing security verification')
+const getFirstDefined = (obj: PlacafipePayload, keys: string[]) => {
+  for (const key of keys) {
+    if (obj[key] != null) return obj[key]
+  }
+  return undefined
+}
+
+const normalizeBaseUrl = (value: string) => {
+  const trimmed = String(value || '').trim()
+  if (!trimmed) {
+    throw createError({
+      statusCode: 500,
+      statusMessage: 'Provider nao configurado. Defina NUXT_PLACA_FIPE_BASE_URL.',
+    })
+  }
+
+  return trimmed.endsWith('/') ? trimmed : `${trimmed}/`
+}
+
+const readHttpStatus = (error: unknown) => {
+  if (!error || typeof error !== 'object') return 0
+  const candidate = error as {
+    status?: number
+    statusCode?: number
+    response?: {
+      status?: number
+    }
+    data?: {
+      status?: number
+      statusCode?: number
+    }
+  }
+
+  const status =
+    Number(candidate.statusCode) ||
+    Number(candidate.status) ||
+    Number(candidate.response?.status) ||
+    Number(candidate.data?.statusCode) ||
+    Number(candidate.data?.status)
+
+  return Number.isFinite(status) ? status : 0
+}
+
+export const readPlacafipeMessage = (payload: unknown) => {
+  const data = toRecord(payload)
+  const messageCandidate = getFirstDefined(data, ['msg', 'message', 'mensagem', 'erro'])
+  return toStringSafe(messageCandidate)
+}
+
+const readPlacafipeCode = (payload: unknown) => {
+  const data = toRecord(payload)
+  const codeValue = getFirstDefined(data, ['codigo', 'code', 'statusCode'])
+  const parsed = toNumberOrNull(codeValue)
+  return parsed != null ? parsed : null
+}
+
+export const isPlacafipeSuccess = (payload: unknown) => {
+  const code = readPlacafipeCode(payload)
+  return code === 1
+}
+
+const formatMoneyBr = (value: number | null, currencyPrefix: string) => {
+  if (value == null) return ''
+  const formatter = new Intl.NumberFormat('pt-BR', {
+    style: 'currency',
+    currency: 'BRL',
+    maximumFractionDigits: 2,
+  })
+
+  if (!currencyPrefix || currencyPrefix === 'R$') {
+    return formatter.format(value)
+  }
+
+  return `${currencyPrefix} ${value.toFixed(2)}`
+}
+
+async function postPlacafipe(
+  context: RequestContext,
+  endpointPath: string,
+  body: PlacafipePayload,
+): Promise<PlacafipePayload> {
+  const baseUrl = normalizeBaseUrl(context.baseUrl)
+  const timeout = Number(context.timeout || DEFAULT_TIMEOUT_MS)
+  const url = new URL(endpointPath.replace(/^\/+/, ''), baseUrl)
+
+  try {
+    const response = await $fetch<PlacafipePayload>(url.toString(), {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+      },
+      body,
+      timeout,
+    })
+
+    return toRecord(response)
+  } catch (error: unknown) {
+    const statusCode = readHttpStatus(error)
+    const maybeData =
+      error && typeof error === 'object'
+        ? toRecord((error as { data?: unknown }).data)
+        : {}
+    const providerMessage = readPlacafipeMessage(maybeData)
+
+    throw createError({
+      statusCode: 502,
+      statusMessage:
+        providerMessage ||
+        (statusCode === 401
+          ? 'Token da API placa FIPE invalido ou expirado.'
+          : `Falha na chamada da API placa FIPE (${endpointPath}).`),
+      data: {
+        providerStatus: statusCode || undefined,
+        providerEndpoint: endpointPath,
+      },
+    })
+  }
+}
+
+export async function fetchPlacafipeByPlateFipe(context: RequestContext, plate: string) {
+  return postPlacafipe(context, '/getplacafipe', {
+    placa: plate,
+    token: context.token,
+  })
+}
+
+export async function fetchPlacafipeByPlate(context: RequestContext, plate: string) {
+  return postPlacafipe(context, '/getplaca', {
+    placa: plate,
+    token: context.token,
+  })
+}
+
+export async function fetchPlacafipeQuotas(context: RequestContext) {
+  const raw = await postPlacafipe(context, '/getquotas', {
+    token: context.token,
+  })
+
+  const dailyLimit = toNumberOrNull(raw.limite_diario)
+  const usedToday = toNumberOrNull(raw.uso_diario)
+  const remainingToday =
+    dailyLimit != null && usedToday != null ? Math.max(0, dailyLimit - usedToday) : null
+
+  return {
+    codigo: readPlacafipeCode(raw),
+    mensagem: readPlacafipeMessage(raw),
+    dailyLimit,
+    usedToday,
+    remainingToday,
+    hasChassiAccess: toBooleanOrNull(raw.chassi),
+    raw,
+  } satisfies PlateFipeQuotaInfo
+}
+
+const mapDetails = (rawInfo: unknown): PlateFipeDetails | undefined => {
+  const data = toRecord(rawInfo)
+
+  const details: PlateFipeDetails = {
+    marca: toStringSafe(getFirstDefined(data, ['marca', 'brand'])),
+    modelo: toStringSafe(getFirstDefined(data, ['modelo', 'model'])),
+    importado: toStringSafe(getFirstDefined(data, ['importado'])),
+    ano: toNumberOrNull(getFirstDefined(data, ['ano', 'fabricacao_ano'])),
+    anoModelo: toNumberOrNull(getFirstDefined(data, ['ano_modelo', 'anoModelo'])),
+    cor: toStringSafe(getFirstDefined(data, ['cor', 'color'])),
+    cilindrada: toStringSafe(getFirstDefined(data, ['cilindradas', 'cilindrada'])),
+    potencia: toStringSafe(getFirstDefined(data, ['potencia'])),
+    combustivel: toStringSafe(getFirstDefined(data, ['combustivel', 'fuel'])),
+    chassi: toStringSafe(getFirstDefined(data, ['chassi', 'chassis'])),
+    motor: toStringSafe(getFirstDefined(data, ['motor'])),
+    passageiros: toNumberOrNull(getFirstDefined(data, ['passageiros'])),
+    uf: toStringSafe(getFirstDefined(data, ['uf', 'state'])),
+    municipio: toStringSafe(getFirstDefined(data, ['municipio', 'city'])),
+    segmento: toStringSafe(getFirstDefined(data, ['segmento'])),
+    subSegmento: toStringSafe(getFirstDefined(data, ['sub_segmento', 'subSegmento'])),
+    placaAlternativa: toStringSafe(getFirstDefined(data, ['placa_alternativa', 'placaAlternativa'])),
+    raw: data,
+  }
+
+  const hasAnyValue =
+    details.marca ||
+    details.modelo ||
+    details.ano != null ||
+    details.anoModelo != null ||
+    details.cor ||
+    details.chassi ||
+    details.uf ||
+    details.municipio ||
+    details.combustivel
+
+  return hasAnyValue ? details : undefined
+}
+
+const mapFipeMatch = (rawEntry: unknown): PlateFipeMatch | null => {
+  const entry = toRecord(rawEntry)
+  if (!Object.keys(entry).length) return null
+
+  const valor = toNumberOrNull(getFirstDefined(entry, ['valor', 'preco', 'price']))
+  const unidadeValor = toStringSafe(getFirstDefined(entry, ['unidade_valor', 'unidadeValor']))
+
+  return {
+    marca: toStringSafe(getFirstDefined(entry, ['marca', 'brand'])),
+    modelo: toStringSafe(getFirstDefined(entry, ['modelo', 'model'])),
+    anoModelo: toNumberOrNull(getFirstDefined(entry, ['ano_modelo', 'anoModelo'])),
+    codigoFipe: toStringSafe(getFirstDefined(entry, ['codigo_fipe', 'codigoFipe'])),
+    codigoMarca: toStringSafe(getFirstDefined(entry, ['codigo_marca', 'codigoMarca'])),
+    codigoModelo: toStringSafe(getFirstDefined(entry, ['codigo_modelo', 'codigoModelo'])),
+    mesReferencia: toStringSafe(getFirstDefined(entry, ['mes_referencia', 'mesReferencia'])),
+    combustivel: toStringSafe(getFirstDefined(entry, ['combustivel', 'fuel'])),
+    valor,
+    valorFormatado: formatMoneyBr(valor, unidadeValor),
+    similaridade: toNumberOrNull(getFirstDefined(entry, ['similaridade'])),
+    correspondencia: toNumberOrNull(getFirstDefined(entry, ['correspondencia'])),
+    raw: entry,
+  }
+}
+
+const sortMatches = (matches: PlateFipeMatch[]) => {
+  return [...matches].sort((a, b) => {
+    const bCorrespondencia = b.correspondencia ?? -1
+    const aCorrespondencia = a.correspondencia ?? -1
+
+    if (bCorrespondencia !== aCorrespondencia) {
+      return bCorrespondencia - aCorrespondencia
+    }
+
+    const bSimilaridade = b.similaridade ?? -1
+    const aSimilaridade = a.similaridade ?? -1
+
+    return bSimilaridade - aSimilaridade
+  })
+}
+
+const buildMatches = (raw: PlacafipePayload) => {
+  const values = Array.isArray(raw.fipe) ? raw.fipe : []
+  const mapped = values.map(mapFipeMatch).filter((item): item is PlateFipeMatch => Boolean(item))
+  return sortMatches(mapped)
+}
+
+export function buildLookupResultFromPlacafipe(options: {
+  requestedPlate: string
+  fipePayload: PlacafipePayload
+  placaPayload?: PlacafipePayload | null
+}): PlateLookupResult {
+  const fipePayload = toRecord(options.fipePayload)
+  const placaPayload = toRecord(options.placaPayload)
+
+  const fipeInfo = toRecord(getFirstDefined(fipePayload, ['informacoes_veiculo']))
+  const placaInfo = toRecord(getFirstDefined(placaPayload, ['informacoes_veiculo']))
+
+  const details = mapDetails(Object.keys(fipeInfo).length ? fipeInfo : placaInfo)
+  const fipeMatches = buildMatches(fipePayload)
+  const fipeMatch = fipeMatches[0]
+
+  const responsePlate = normalizePlate(
+    toStringSafe(
+      getFirstDefined(fipePayload, ['placa']) ||
+        getFirstDefined(placaPayload, ['placa']) ||
+        getFirstDefined(fipeInfo, ['placa']) ||
+        getFirstDefined(placaInfo, ['placa']) ||
+        options.requestedPlate,
+    ),
+  )
+
+  return {
+    plate: responsePlate,
+    brand: toStringSafe(fipeMatch?.marca || details?.marca),
+    model: toStringSafe(fipeMatch?.modelo || details?.modelo),
+    year: fipeMatch?.anoModelo ?? details?.anoModelo ?? details?.ano ?? null,
+    fipeValue: fipeMatch?.valor ?? null,
+    source: 'placafipe-api',
+    ...(details ? { details } : {}),
+    ...(fipeMatch ? { fipeMatch } : {}),
+    ...(fipeMatches.length ? { fipeMatches } : {}),
+  }
+}
+
+export function hasMeaningfulLookupData(result: PlateLookupResult) {
+  return Boolean(
+    result.brand ||
+      result.model ||
+      result.year != null ||
+      result.fipeValue != null ||
+      result.details ||
+      (result.fipeMatches && result.fipeMatches.length > 0),
   )
 }
 
-export async function fetchPlacafipeByPlate(plate: string, timeout = 12000) {
-  const url = `https://placafipe.com/placa/${encodeURIComponent(plate)}`
+export function resolvePlacafipeContext(runtimeConfig: {
+  placaFipeBaseUrl?: string
+  placaFipeToken?: string
+}) {
+  const baseUrl = String(runtimeConfig.placaFipeBaseUrl || '').trim()
+  const token = String(runtimeConfig.placaFipeToken || '').trim()
 
-  const runtimeConfig = useRuntimeConfig()
-  const cfClearance = String(runtimeConfig.placaFipeCfClearance || '').trim()
-
-  let response
-  try {
-    response = await $fetch.raw<string>(url, {
-      method: 'GET',
-      responseType: 'text',
-      timeout,
-      headers: {
-        'user-agent':
-          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36',
-        accept:
-          'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-        'accept-language': 'en,pt-BR;q=0.9,pt;q=0.8,es;q=0.7,en-US;q=0.6,und;q=0.5',
-        'cache-control': 'no-cache',
-        pragma: 'no-cache',
-        referer: 'https://placafipe.com/',
-        origin: 'https://placafipe.com',
-        'upgrade-insecure-requests': '1',
-        priority: 'u=0, i',
-        'sec-ch-ua': '"Not:A-Brand";v="99", "Google Chrome";v="145", "Chromium";v="145"',
-        'sec-ch-ua-mobile': '?0',
-        'sec-ch-ua-platform': '"Windows"',
-        'sec-fetch-dest': 'document',
-        'sec-fetch-mode': 'navigate',
-        'sec-fetch-site': 'same-origin',
-        'sec-fetch-user': '?1',
-        ...(cfClearance ? { cookie: `cf_clearance=${cfClearance}` } : {}),
-      },
-    })
-  } catch (error: unknown) {
-    const statusCode = Number((error as { statusCode?: number }).statusCode || 0)
-    if (statusCode === 403) {
-      throw createError({
-        statusCode: 502,
-        statusMessage: cfClearance
-          ? 'placafipe.com bloqueou a requisicao mesmo com cf_clearance.'
-          : 'placafipe.com bloqueou a requisicao (403). Defina NUXT_PLACA_FIPE_CF_CLEARANCE com cookie valido do navegador.',
-      })
-    }
-    throw error
-  }
-
-  const html = String(response._data || '')
-
-  if (isCloudflareBlock(html)) {
+  if (!baseUrl || !token) {
     throw createError({
-      statusCode: 502,
-      statusMessage: 'placafipe.com bloqueou a requisicao do servidor (Cloudflare).',
+      statusCode: 500,
+      statusMessage:
+        'Provider nao configurado. Defina NUXT_PLACA_FIPE_BASE_URL e NUXT_PLACA_FIPE_TOKEN.',
     })
   }
-
-  const rows = extractTableRows(html)
-
-  if (!rows) {
-    throw createError({
-      statusCode: 502,
-      statusMessage: 'Nao foi possivel localizar a tabela fipeTablePriceDetail no HTML retornado.',
-    })
-  }
-
-  const details = toDetails(rows)
 
   return {
-    plate,
-    brand: details.marca,
-    model: details.modelo,
-    year: details.anoModelo ?? details.ano,
-    fipeValue: extractFipeValue(html),
-    details,
+    baseUrl,
+    token,
   }
 }

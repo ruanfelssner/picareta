@@ -46,7 +46,36 @@ export interface PlateFipeDetails {
   passageiros: number | null
   uf: string
   municipio: string
-  raw: Record<string, string>
+  segmento: string
+  subSegmento: string
+  placaAlternativa: string
+  raw: Record<string, unknown>
+}
+
+export interface PlateFipeMatch {
+  marca: string
+  modelo: string
+  anoModelo: number | null
+  codigoFipe: string
+  codigoMarca: string
+  codigoModelo: string
+  mesReferencia: string
+  combustivel: string
+  valor: number | null
+  valorFormatado: string
+  similaridade: number | null
+  correspondencia: number | null
+  raw: Record<string, unknown>
+}
+
+export interface PlateFipeQuotaInfo {
+  codigo: number | null
+  mensagem: string
+  dailyLimit: number | null
+  usedToday: number | null
+  remainingToday: number | null
+  hasChassiAccess: boolean | null
+  raw: Record<string, unknown>
 }
 
 export interface PlateLookupResult {
@@ -55,6 +84,19 @@ export interface PlateLookupResult {
   model: string
   year: number | null
   fipeValue: number | null
-  source: 'placa-fipe' | 'placafipe-site' | 'mock'
+  source: 'placafipe-api' | 'cache' | 'mock'
   details?: PlateFipeDetails
+  fipeMatch?: PlateFipeMatch
+  fipeMatches?: PlateFipeMatch[]
+}
+
+export interface PlateLookupResponse {
+  result: PlateLookupResult
+  warning?: string
+  detail?: string
+  cache: {
+    hit: boolean
+    storedAt?: string
+  }
+  quota?: PlateFipeQuotaInfo
 }

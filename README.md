@@ -13,6 +13,8 @@ Aplicacao Nuxt para cadastrar carros de leilao, estimar custos de recuperacao e 
 
 ✅ Cadastro de carros de leilão com fotos  
 ✅ Integração com API Placa FIPE  
+✅ Indicador de quotas restantes na UI  
+✅ Cache por placa no Mongo para reduzir custo de consulta  
 ✅ Cálculo de margem em tempo real  
 ✅ Operação offline com IndexedDB  
 ✅ Sincronização com backend quando online
@@ -141,12 +143,13 @@ Principais:
 - `NUXT_FLASK_TIMEOUT_MS`: timeout da chamada OCR Flask em ms (default: 120000)
 - `NUXT_MONGO_URI`: Connection string do MongoDB
 - `NUXT_PLACA_FIPE_BASE_URL`: base URL do provider de placa/FIPE
-- `NUXT_PLACA_FIPE_LOOKUP_PATH`: path de lookup (default: /lookup)
-- `NUXT_PLACA_FIPE_LOOKUP_METHOD`: metodo HTTP do provider (`POST` default)
-- `NUXT_PLACA_FIPE_REQUEST_PLATE_FIELD`: nome do campo enviado no body/query (`placa` default)
-- `NUXT_PLACA_FIPE_DEVICE_TOKEN`: header `DeviceToken` opcional para providers que exigem esse header
-- `NUXT_PLACA_FIPE_USER_AGENT`: user-agent da chamada ao provider
-- `NUXT_PLACA_FIPE_TOKEN`: Token da API Placa FIPE
-- `NUXT_PLACA_FIPE_TIMEOUT_MS`: timeout do lookup Placa/FIPE em ms (default: 8000)
-- `NUXT_PLACA_FIPE_LOOKUP_STRATEGY`: estrategia de consulta (`scrape-first` default, `provider-first`, `scrape-only`, `provider-only`)
-- `NUXT_PLACA_FIPE_CF_CLEARANCE`: cookie `cf_clearance` opcional para scraping quando Cloudflare bloquear
+- `NUXT_PLACA_FIPE_TOKEN`: token de autorizacao do provider
+
+### Exemplo de configuracao para API oficial
+
+```bash
+NUXT_PLACA_FIPE_BASE_URL=https://api.placafipe.com.br
+NUXT_PLACA_FIPE_TOKEN=seu_token_aqui
+```
+
+Obs.: o backend usa os endpoints `POST /getplacafipe`, `POST /getplaca` (fallback) e `POST /getquotas`.

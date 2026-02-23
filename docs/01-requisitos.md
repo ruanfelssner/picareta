@@ -13,8 +13,13 @@ O projeto Picareta precisa permitir avaliacao rapida de carros de leilao no celu
 - RF-02.3: em producao, o frontend deve chamar OCR via mesma origem (`/api/v1/plate/recognize` no Nuxt server), e o Nuxt deve encaminhar para o Flask interno configurado por `NUXT_FLASK_BASE_URL`.
 - RF-03: consultar dados de placa/FIPE via API externa (quando configurada).
 - RF-03.1: consulta de placa/FIPE deve ocorrer por placa informada manualmente.
-- RF-03.2: consultar `https://placafipe.com/placa/{PLACA}` e extrair os campos da tabela `fipeTablePriceDetail`.
-- RF-03.3: extrair no minimo: marca, modelo, importado, ano, ano modelo, cor, cilindrada, potencia, combustivel, chassi, motor, passageiros, UF e municipio.
+- RF-03.2: integrar com `https://api.placafipe.com.br` usando `POST /getplacafipe` como consulta principal da placa + valor FIPE.
+- RF-03.3: quando `getplacafipe` nao retornar dados suficientes do veiculo, executar fallback com `POST /getplaca`.
+- RF-03.4: extrair no minimo: marca, modelo, ano, ano modelo, cor, cilindrada, potencia, combustivel, chassi, motor, UF, municipio, segmento e sub-segmento.
+- RF-03.5: integrar `POST /getquotas` para consultar limite diario sem consumir quota.
+- RF-03.6: UI deve exibir buscas restantes do dia (`limite_diario - uso_diario`) e permitir atualizar esse indicador manualmente.
+- RF-03.7: quando provider retornar detalhes da placa sem valor FIPE, esses dados devem ser preservados no retorno da API.
+- RF-03.8: resultados de consulta por placa devem ser cacheados em base (`Mongo`) para evitar novo custo em consultas repetidas da mesma placa.
 - RF-04: quando API externa nao estiver configurada, manter fallback local mock para nao bloquear o fluxo.
 - RF-05: cadastrar custos por item (pintura, mecanica, suspensao, vidros, portas e outros).
 - RF-05.1: fluxo de custos deve iniciar com item padrao `Leilao` no valor de `R$ 800`, mantendo edicao livre.
@@ -53,5 +58,5 @@ O projeto Picareta precisa permitir avaliacao rapida de carros de leilao no celu
 
 ## 5. Dependencias externas
 
-- API Placa/FIPE (configurada por variaveis `NUXT_PLACA_FIPE_*`).
+- API Placa/FIPE (configurada por `NUXT_PLACA_FIPE_BASE_URL` e `NUXT_PLACA_FIPE_TOKEN`).
 - MongoDB opcional para sincronizacao server-side.
