@@ -1,10 +1,18 @@
 import { createError } from 'h3'
 import { fetchPlacafipeQuotas, resolvePlacafipeContext } from '@core/server/utils/placafipe'
+import { buildMockQuotaInfo, isPlacafipeMockEnabled } from '@core/server/utils/placafipeMock'
 
 const QUOTA_TIMEOUT_MS = 12000
 
 export default defineEventHandler(async (event) => {
   const runtimeConfig = useRuntimeConfig(event)
+
+  if (isPlacafipeMockEnabled(runtimeConfig)) {
+    return {
+      quota: buildMockQuotaInfo(),
+    }
+  }
+
   const context = resolvePlacafipeContext(runtimeConfig)
 
   try {

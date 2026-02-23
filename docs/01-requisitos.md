@@ -11,6 +11,15 @@ O projeto Picareta precisa permitir avaliacao rapida de carros de leilao no celu
 - RF-02.1: expor endpoint de OCR de placa que receba imagem em base64 (string pura ou data URL) e retorne placa/candidatos em JSON.
 - RF-02.2: manter endpoint versionado `POST /api/v1/plate/recognize` com payload `imageBase64` para integracao direta com Nuxt.
 - RF-02.3: em producao, o frontend deve chamar OCR via mesma origem (`/api/v1/plate/recognize` no Nuxt server), e o Nuxt deve encaminhar para o Flask interno configurado por `NUXT_FLASK_BASE_URL`.
+- RF-02.4: quando OCR retornar candidatos ambiguos para a mesma base de placa (ex.: mesmos 6 primeiros caracteres e ultimo digito diferente), o sistema nao deve consultar FIPE automaticamente; deve exigir confirmacao manual da placa no Step 2.
+- RF-02.5: em quase empate de confianca entre candidatos `...7` e `...0` no ultimo digito, priorizar `...0` na ordenacao de candidatos para acelerar a confirmacao manual.
+- RF-02.6: a fila de fotos deve permitir preview ampliado da imagem antes de preencher o cadastro, para conferir placa visualmente no celular.
+- RF-02.7: no Step 2, placa e candidatos do OCR devem aparecer no mesmo bloco de confirmacao para reduzir erro operacional.
+- RF-02.8: no Step 2, marca/modelo e ano devem ficar na mesma linha para leitura rapida em campo.
+- RF-02.9: no Step 2, o campo da placa deve ficar sempre editavel e o botao de consultar novamente deve ficar na mesma linha dos candidatos OCR.
+- RF-02.10: ao apresentar candidatos do OCR, a primeira sugestao deve vir selecionada por padrao.
+- RF-02.11: no preview da fila, candidatos OCR devem ficar sobrepostos na imagem e a confirmacao deve ocorrer ao tocar no candidato (sem botao extra de preencher).
+- RF-02.12: ao tocar em um candidato de placa (Step 2 ou preview da fila), o sistema deve entrar em loading e consultar Placa FIPE imediatamente.
 - RF-03: consultar dados de placa/FIPE via API externa (quando configurada).
 - RF-03.1: consulta de placa/FIPE deve ocorrer por placa informada manualmente.
 - RF-03.2: integrar com `https://api.placafipe.com.br` usando `POST /getplacafipe` como consulta principal da placa + valor FIPE.
@@ -18,8 +27,10 @@ O projeto Picareta precisa permitir avaliacao rapida de carros de leilao no celu
 - RF-03.4: extrair no minimo: marca, modelo, ano, ano modelo, cor, cilindrada, potencia, combustivel, chassi, motor, UF, municipio, segmento e sub-segmento.
 - RF-03.5: integrar `POST /getquotas` para consultar limite diario sem consumir quota.
 - RF-03.6: UI deve exibir buscas restantes do dia (`limite_diario - uso_diario`) e permitir atualizar esse indicador manualmente.
+- RF-03.10: indicador de buscas restantes deve ficar no header global ao lado do botao "Carros salvos" (fora do card "Foto do veiculo"), com acao de atualizar.
 - RF-03.7: quando provider retornar detalhes da placa sem valor FIPE, esses dados devem ser preservados no retorno da API.
 - RF-03.8: resultados de consulta por placa devem ser cacheados em base (`Mongo`) para evitar novo custo em consultas repetidas da mesma placa.
+- RF-03.9: disponibilizar modo mock por ambiente (`NUXT_PLACA_FIPE_MOCK=true`) para testes sem consumo de quota da API externa.
 - RF-04: quando API externa nao estiver configurada, manter fallback local mock para nao bloquear o fluxo.
 - RF-05: cadastrar custos por item (pintura, mecanica, suspensao, vidros, portas e outros).
 - RF-05.1: fluxo de custos deve iniciar com item padrao `Leilao` no valor de `R$ 800`, mantendo edicao livre.
@@ -58,5 +69,5 @@ O projeto Picareta precisa permitir avaliacao rapida de carros de leilao no celu
 
 ## 5. Dependencias externas
 
-- API Placa/FIPE (configurada por `NUXT_PLACA_FIPE_BASE_URL` e `NUXT_PLACA_FIPE_TOKEN`).
+- API Placa/FIPE (configurada por `NUXT_PLACA_FIPE_BASE_URL` e `NUXT_PLACA_FIPE_TOKEN` quando `NUXT_PLACA_FIPE_MOCK=false`).
 - MongoDB opcional para sincronizacao server-side.

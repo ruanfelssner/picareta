@@ -11,14 +11,35 @@
             Picareta
           </button>
         </div>
-        <button
-          class="rounded-lg border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100"
-          type="button"
-          @click="goToSavedCars"
-        >
-          Carros salvos
-          <span v-if="savedCarsCount > 0" class="ml-1.5 rounded-full bg-slate-900 px-2 py-0.5 text-xs text-white">{{ savedCarsCount }}</span>
-        </button>
+        <div class="flex items-center gap-2">
+          <div class="rounded-lg border border-slate-200 bg-slate-50 px-2 py-1.5">
+            <div class="flex items-center gap-2">
+              <p class="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Buscas</p>
+              <p class="text-sm font-bold text-slate-900">
+                {{ plateFipeQuota?.remainingToday ?? '-' }}
+                <span class="text-[10px] font-semibold text-slate-500">/ {{ plateFipeQuota?.dailyLimit ?? '-' }}</span>
+              </p>
+              <button
+                class="cursor-pointer rounded border border-slate-300 px-1.5 py-0.5 text-[10px] font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-60"
+                type="button"
+                :disabled="plateFipeQuotaLoading"
+                @click="refreshPlateFipeQuota"
+              >
+                {{ plateFipeQuotaLoading ? '...' : '↻' }}
+              </button>
+            </div>
+            <p v-if="plateFipeQuotaError" class="max-w-32 truncate text-[10px] text-rose-600">{{ plateFipeQuotaError }}</p>
+          </div>
+
+          <button
+            class="rounded-lg border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100"
+            type="button"
+            @click="goToSavedCars"
+          >
+            Carros salvos
+            <span v-if="savedCarsCount > 0" class="ml-1.5 rounded-full bg-slate-900 px-2 py-0.5 text-xs text-white">{{ savedCarsCount }}</span>
+          </button>
+        </div>
       </div>
     </header>
 
@@ -31,9 +52,40 @@
 </template>
 
 <script setup lang="ts">
+import { useAuctionCarsApi } from '~/composables/useAuctionCarsApi'
+import type { PlateFipeQuotaInfo } from '@core/shared/types/auction'
+
 const savedCarsCount = useState<number>('savedCarsCount', () => 0)
 const triggerSavedCars = useState<number>('triggerSavedCars', () => 0)
 const triggerStep1 = useState<number>('triggerStep1', () => 0)
+const plateFipeQuota = useState<PlateFipeQuotaInfo | null>('plateFipeQuota', () => null)
+const plateFipeQuotaLoading = useState<boolean>('plateFipeQuotaLoading', () => false)
+const plateFipeQuotaError = useState<string>('plateFipeQuotaError', () => '')
+const api = useAuctionCarsApi()
+
+const readErrorMessage = (error: unknown) => {
+  if (error && typeof error === 'object') {
+    const maybeData = (error as { data?: { statusMessage?: string; message?: string } }).data
+    if (maybeData?.statusMessage) return maybeData.statusMessage
+    if (maybeData?.message) return maybeData.message
+  }
+  if (error instanceof Error && error.message) return error.message
+  return 'Falha ao atualizar quota.'
+}
+
+const refreshPlateFipeQuota = async () => {
+  plateFipeQuotaLoading.value = true
+  plateFipeQuotaError.value = ''
+
+  try {
+    const response = await api.getPlateFipeQuotas()
+    plateFipeQuota.value = response.quota
+  } catch (error) {
+    plateFipeQuotaError.value = readErrorMessage(error)
+  } finally {
+    plateFipeQuotaLoading.value = false
+  }
+}
 
 const goToSavedCars = () => {
   triggerSavedCars.value++

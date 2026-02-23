@@ -5,6 +5,11 @@ import { normalizePlate } from '@core/shared/valuation'
 import { findPlateLookupCache, upsertPlateLookupCache } from '@core/server/repositories/plateLookupCacheRepo'
 import { isMongoConfigured } from '@core/server/utils/mongo'
 import {
+  buildMockLookupResultByPlate,
+  buildMockQuotaInfo,
+  isPlacafipeMockEnabled,
+} from '@core/server/utils/placafipeMock'
+import {
   buildLookupResultFromPlacafipe,
   fetchPlacafipeByPlate,
   fetchPlacafipeByPlateFipe,
@@ -129,6 +134,17 @@ export default defineEventHandler(async (event): Promise<PlateLookupResponse> =>
       statusCode: 400,
       statusMessage: 'Informe uma placa valida para consulta.',
     })
+  }
+
+  if (isPlacafipeMockEnabled(runtimeConfig)) {
+    return {
+      result: buildMockLookupResultByPlate(plate),
+      warning: 'Modo mock ativo para placa/FIPE. Nenhuma consulta externa foi consumida.',
+      cache: {
+        hit: false,
+      },
+      quota: buildMockQuotaInfo(),
+    }
   }
 
   let context: { baseUrl: string; token: string }

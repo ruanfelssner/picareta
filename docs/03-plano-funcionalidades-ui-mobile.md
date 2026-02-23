@@ -31,8 +31,8 @@ Colocar o app para uso real no celular, com cadastro e analise de margem em pouc
 ## 3. Fluxo de UI no celular
 
 1. Abrir app em `index`.
-2. Tirar foto frontal do carro (opcional no MVP).
-3. Preencher placa e tocar em "Buscar placa/FIPE".
+2. Tirar foto frontal do carro (opcional no MVP) e usar preview ampliado da fila para conferir imagem/placa.
+3. Confirmar placa sugerida pelo OCR; se houver ambiguidade, editar/selecionar manualmente no Step 2 antes da primeira consulta FIPE.
 4. Ajustar valor de compra e custos de recuperacao.
 5. Ler bloco "Analise de margem" em tempo real.
 6. Tocar "Salvar local" para nao perder o registro.
@@ -50,5 +50,6 @@ Colocar o app para uso real no celular, com cadastro e analise de margem em pouc
 
 - Definir `.env` com `NUXT_PUBLIC_SITE_URL`.
 - Se usar sync, configurar `NUXT_MONGO_URI` e `NUXT_MONGO_DB_NAME`.
-- Se usar integracao real, configurar `NUXT_PLACA_FIPE_BASE_URL` e `NUXT_PLACA_FIPE_TOKEN`.
+- Para testes sem custo de API, usar `NUXT_PLACA_FIPE_MOCK=true`.
+- Se usar integracao real, configurar `NUXT_PLACA_FIPE_BASE_URL`, `NUXT_PLACA_FIPE_TOKEN` e `NUXT_PLACA_FIPE_MOCK=false`.
 - Executar `pnpm dev` e abrir no celular na mesma rede local.

@@ -25,6 +25,9 @@ type PlateRecognitionResult = {
     yolo_model?: string | null
     yolo_error?: string | null
     pipeline?: string[]
+    timings_ms?: Record<string, number>
+    ambiguous_top_pair?: boolean
+    zero_priority_applied?: boolean
   }
 }
 

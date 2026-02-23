@@ -23,6 +23,7 @@ export default defineNuxtConfig({
     mongoDbName: 'picareta',
     placaFipeBaseUrl: process.env.NUXT_PLACA_FIPE_BASE_URL || 'https://api.placafipe.com.br',
     placaFipeToken: process.env.NUXT_PLACA_FIPE_TOKEN || '',
+    placaFipeMock: process.env.NUXT_PLACA_FIPE_MOCK || 'false',
     public: {
       siteUrl: 'http://localhost:3000',
       siteName: 'Picareta',

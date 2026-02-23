@@ -144,12 +144,15 @@ Principais:
 - `NUXT_MONGO_URI`: Connection string do MongoDB
 - `NUXT_PLACA_FIPE_BASE_URL`: base URL do provider de placa/FIPE
 - `NUXT_PLACA_FIPE_TOKEN`: token de autorizacao do provider
+- `NUXT_PLACA_FIPE_MOCK`: quando `true`, usa resposta mock local e nao consome a API externa
 
 ### Exemplo de configuracao para API oficial
 
 ```bash
 NUXT_PLACA_FIPE_BASE_URL=https://api.placafipe.com.br
 NUXT_PLACA_FIPE_TOKEN=seu_token_aqui
+NUXT_PLACA_FIPE_MOCK=false
 ```
 
-Obs.: o backend usa os endpoints `POST /getplacafipe`, `POST /getplaca` (fallback) e `POST /getquotas`.
+Obs.: para nao consumir quota da API durante testes, use `NUXT_PLACA_FIPE_MOCK=true`.
+Quando desativado, o backend usa os endpoints `POST /getplacafipe`, `POST /getplaca` (fallback) e `POST /getquotas`.

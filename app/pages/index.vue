@@ -22,13 +22,13 @@
 
     <!-- Fila de rascunhos -->
     <div v-if="draftQueue.length > 0" class="bg-slate-900 px-4 py-2">
-      <div class="mx-auto max-w-md">
+      <div class="mx-auto max-w-3xl">
         <p class="mb-1.5 text-center text-xs text-slate-400">Fila ({{ draftQueue.length }}) &mdash; toque no pronto para preencher</p>
         <div class="flex gap-2 overflow-x-auto pb-1">
           <div
             v-for="(item, idx) in draftQueue"
             :key="item.draft.id"
-            class="relative shrink-0 rounded-xl border-2 p-1 text-left transition-colors"
+            class="relative shrink-0 rounded-xl border-2 p-1.5 text-left transition-colors"
             :class="{
               'border-white bg-slate-700 cursor-pointer': item.draft.id === activeQueueId,
               'border-slate-600 bg-slate-800 hover:border-slate-400 cursor-pointer': item.status === 'ready' && item.draft.id !== activeQueueId,
@@ -40,10 +40,10 @@
               <img
                 v-if="item.draft.photoDataUrl"
                 :src="item.draft.photoDataUrl"
-                class="h-14 w-14 rounded-lg object-cover"
+                class="h-32 w-32 rounded-lg object-cover"
                 alt=""
               >
-              <div v-else class="flex h-14 w-14 items-center justify-center rounded-lg bg-slate-700">
+              <div v-else class="flex h-32 w-32 items-center justify-center rounded-lg bg-slate-700">
                 <svg class="h-6 w-6 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" /></svg>
               </div>
               <!-- Status overlay for processing -->
@@ -54,14 +54,26 @@
               <div v-if="item.draft.id === activeQueueId" class="absolute inset-0 flex items-center justify-center rounded-lg bg-slate-900/40">
                 <svg class="h-6 w-6 text-white drop-shadow" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7" /></svg>
               </div>
+              <button
+                class="absolute bottom-1 right-1 cursor-pointer rounded-md bg-slate-900/80 px-2 py-1 text-[10px] font-semibold text-white hover:bg-slate-900"
+                type="button"
+                @click.stop="openQueuePreview(idx)"
+              >
+                Ver
+              </button>
             </div>
             <p
-              class="mt-1 max-w-[56px] truncate text-center text-xs font-semibold"
+              class="mt-1 max-w-[128px] truncate text-center text-xs font-semibold"
               :class="item.draft.id === activeQueueId ? 'text-white' : 'text-slate-300'"
             >
               {{ item.status === 'processing' ? '...' : (item.draft.plate || '???') }}
             </p>
-            <p v-if="item.status === 'error' && item.errorMessage" class="mt-0.5 max-w-[56px] truncate text-center text-[10px] leading-tight text-rose-400" :title="item.errorMessage">
+            <p
+              v-if="item.errorMessage"
+              class="mt-0.5 max-w-[128px] truncate text-center text-[10px] leading-tight"
+              :class="item.status === 'error' ? 'text-rose-400' : 'text-amber-400'"
+              :title="item.errorMessage"
+            >
               {{ item.errorMessage }}
             </p>
             <!-- Status dot -->
@@ -86,6 +98,65 @@
       </div>
     </div>
 
+    <div v-if="queuePreviewItem" class="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-sm" @click.self="closeQueuePreview">
+      <div class="absolute inset-0 flex items-center justify-center p-3">
+        <div class="relative max-h-[96dvh] w-fit max-w-[96vw] overflow-hidden rounded-2xl border border-white/20">
+          <img
+            v-if="queuePreviewItem.draft.photoDataUrl"
+            :src="queuePreviewItem.draft.photoDataUrl"
+            class="block h-auto max-h-[96dvh] w-auto max-w-[96vw]"
+            alt="Preview da foto"
+          >
+
+          <button
+            class="absolute right-3 top-3 z-30 cursor-pointer rounded-lg bg-black/65 px-3 py-1.5 text-xs font-semibold text-white hover:bg-black/80"
+            type="button"
+            @click="closeQueuePreview"
+          >
+            Fechar
+          </button>
+
+          <div class="pointer-events-none absolute inset-x-0 top-0 h-24 bg-linear-to-b from-black/65 to-transparent" />
+          <div class="absolute left-3 top-3 z-20 rounded-md bg-black/55 px-2 py-1 text-xs font-semibold text-white">
+            {{ queuePreviewItem.draft.plate || 'Sem placa confirmada' }}
+          </div>
+
+          <div class="pointer-events-none absolute inset-x-0 bottom-0 h-40 bg-linear-to-t from-black/85 to-transparent" />
+          <div class="absolute inset-x-3 bottom-3 z-20">
+            <p class="text-xs font-semibold text-white/90">
+              Toque na placa correta para confirmar direto pela foto
+            </p>
+
+            <div v-if="queuePreviewItem.status === 'processing'" class="mt-2 inline-flex rounded-md bg-white/90 px-2 py-1 text-xs font-semibold text-slate-700">
+              Processando OCR...
+            </div>
+
+            <div v-else-if="queuePreviewCandidates.length > 0" class="mt-2 flex flex-wrap gap-2">
+            <button
+              v-for="candidate in queuePreviewCandidates"
+              :key="candidate"
+              class="cursor-pointer rounded-md border px-3 py-1.5 text-xs font-bold transition-colors disabled:cursor-not-allowed disabled:opacity-60"
+              :class="
+                candidate === normalizePlate(queuePreviewItem.draft.plate || '')
+                  ? 'border-white bg-white text-slate-900'
+                  : 'border-amber-300 bg-amber-50/95 text-amber-900 hover:bg-amber-100'
+              "
+              type="button"
+              :disabled="loadingLookup"
+              @click="confirmQueueCandidate(candidate)"
+            >
+              {{ loadingLookup && selectingPlateCandidate === candidate ? 'Consultando...' : candidate }}
+            </button>
+          </div>
+
+            <div v-else class="mt-2 inline-flex rounded-md bg-white/90 px-2 py-1 text-xs font-semibold text-slate-700">
+              Sem sugestao OCR para esta foto.
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- STEP 1: Foto e OCR -->
     <section v-if="currentStep === 1" class="mx-4 mt-4 space-y-4">
       <div class="surface-card rounded-2xl p-5">
@@ -101,33 +172,6 @@
           }"
         >
           {{ statusMessage }}
-        </div>
-
-        <div class="mt-3 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
-          <div class="flex items-center justify-between gap-3">
-            <div>
-              <p class="text-xs font-semibold uppercase tracking-wider text-slate-500">Buscas restantes hoje</p>
-              <p class="mt-1 text-2xl font-bold text-slate-900">
-                {{ plateFipeQuota?.remainingToday ?? '-' }}
-                <span class="text-sm font-semibold text-slate-500">
-                  / {{ plateFipeQuota?.dailyLimit ?? '-' }}
-                </span>
-              </p>
-            </div>
-            <button
-              class="rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-60"
-              type="button"
-              :disabled="plateFipeQuotaLoading"
-              @click="refreshPlateFipeQuota"
-            >
-              {{ plateFipeQuotaLoading ? 'Atualizando...' : 'Atualizar' }}
-            </button>
-          </div>
-          <p class="mt-1 text-xs text-slate-500">
-            Usadas hoje: {{ plateFipeQuota?.usedToday ?? '-' }}.
-            <span v-if="plateFipeQuotaError" class="text-rose-600">{{ plateFipeQuotaError }}</span>
-            <span v-else>{{ plateFipeQuota?.mensagem || 'Sem retorno de quota ainda.' }}</span>
-          </p>
         </div>
 
         <div class="mt-4">
@@ -187,65 +231,84 @@
         <div class="mt-4 space-y-3">
           <div class="rounded-xl bg-slate-50 p-4">
             <div class="grid grid-cols-2 gap-4">
-              <div>
-                <div class="flex items-center justify-between gap-2">
-                  <p class="text-xs font-semibold uppercase tracking-wider text-slate-500">Placa</p>
-                  <button
-                    class="rounded-lg border border-slate-300 px-2 py-1 text-[11px] font-semibold text-slate-700 hover:bg-slate-100"
-                    type="button"
-                    @click="togglePlateEdit"
-                  >
-                    {{ editingPlate ? 'Fechar' : 'Editar' }}
-                  </button>
-                </div>
-                <p v-if="!editingPlate" class="mt-1 text-lg font-bold text-slate-900">{{ draft.plate || '-' }}</p>
-                <div v-else class="mt-1 space-y-2">
+              <div
+                class="col-span-2 rounded-xl border bg-white p-3"
+                :class="editingPlate ? 'border-amber-300' : 'border-slate-200'"
+              >
+                <p class="text-xs font-semibold uppercase tracking-wider text-slate-500">Placa + candidatos OCR</p>
+
+                <div class="mt-2 flex items-center gap-2 overflow-x-auto pb-1 whitespace-nowrap">
                   <input
                     :value="draft.plate"
-                    class="field-input uppercase"
+                    class="field-input h-9 min-w-[140px] max-w-[180px] shrink-0 uppercase"
                     maxlength="8"
                     placeholder="AAA0A00"
                     @input="onPlateInput"
                   >
                   <button
-                    class="w-full rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+                    class="shrink-0 rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
                     type="button"
                     :disabled="loadingLookup || !draft.plate"
                     @click="lookupCurrentPlate"
                   >
                     {{ loadingLookup ? 'Consultando...' : 'Consultar novamente' }}
                   </button>
+                  <template v-if="suggestedPlateCandidates.length > 0">
+                    <span class="text-xs font-semibold uppercase tracking-wider text-amber-700">OCR:</span>
+                    <button
+                      v-for="candidate in suggestedPlateCandidates"
+                      :key="candidate"
+                      class="shrink-0 cursor-pointer rounded-lg border px-3 py-1.5 text-xs font-bold transition-colors disabled:cursor-not-allowed disabled:opacity-60"
+                      :class="
+                        candidate === draft.plate
+                          ? 'border-slate-900 bg-slate-900 text-white'
+                          : 'border-amber-300 bg-amber-50 text-amber-900 hover:bg-amber-100'
+                      "
+                      type="button"
+                      :disabled="loadingLookup"
+                      @click="applyPlateCandidate(candidate)"
+                    >
+                      {{ loadingLookup && selectingPlateCandidate === candidate ? 'Consultando...' : candidate }}
+                    </button>
+                  </template>
                 </div>
+
+                <p v-if="hasAmbiguousPlateCandidates" class="mt-1 text-xs font-semibold text-amber-700">
+                  Existem candidatos muito parecidos. Confirme antes da primeira consulta FIPE.
+                </p>
               </div>
-              <div>
-                <p class="text-xs font-semibold uppercase tracking-wider text-slate-500">Ano</p>
-                <p class="mt-1 text-lg font-bold text-slate-900">{{ draft.year || '-' }}</p>
-              </div>
-              <div class="col-span-2">
-                <div class="flex items-center justify-between">
+
+              <div class="col-span-2 rounded-xl border border-slate-200 bg-white p-3">
+                <div class="grid grid-cols-[1fr_auto] gap-3">
                   <div>
-                    <p class="text-xs font-semibold uppercase tracking-wider text-slate-500">Marca/Modelo</p>
+                    <div class="flex items-center justify-between gap-2">
+                      <p class="text-xs font-semibold uppercase tracking-wider text-slate-500">Marca/Modelo</p>
+                      <button
+                        class="rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100"
+                        type="button"
+                        @click="toggleBrandModelEdit"
+                      >
+                        {{ editingBrandModel ? 'Confirmar' : 'Editar' }}
+                      </button>
+                    </div>
                     <p class="mt-1 text-lg font-bold text-slate-900">{{ draft.brand }} {{ draft.model }}</p>
+                    <div v-if="editingBrandModel" class="mt-2 grid grid-cols-2 gap-2">
+                      <input
+                        v-model="draft.brand"
+                        class="field-input"
+                        placeholder="Marca"
+                      >
+                      <input
+                        v-model="draft.model"
+                        class="field-input"
+                        placeholder="Modelo"
+                      >
+                    </div>
                   </div>
-                  <button
-                    class="rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100"
-                    type="button"
-                    @click="toggleBrandModelEdit"
-                  >
-                    {{ editingBrandModel ? 'Confirmar' : 'Editar' }}
-                  </button>
-                </div>
-                <div v-if="editingBrandModel" class="mt-2 flex gap-2">
-                  <input
-                    v-model="draft.brand"
-                    class="field-input"
-                    placeholder="Marca"
-                  >
-                  <input
-                    v-model="draft.model"
-                    class="field-input"
-                    placeholder="Modelo"
-                  >
+                  <div class="min-w-[84px] text-right">
+                    <p class="text-xs font-semibold uppercase tracking-wider text-slate-500">Ano</p>
+                    <p class="mt-1 text-lg font-bold text-slate-900">{{ draft.year || '-' }}</p>
+                  </div>
                 </div>
               </div>
               <div class="col-span-2">
@@ -589,6 +652,7 @@ type DraftQueueItem = {
   ocrProcessed: boolean
   ocrSuccess: boolean
   plateCandidates: string[]
+  needsPlateConfirmation: boolean
   targetMarginValue: number
   status: 'processing' | 'ready' | 'error'
   errorMessage?: string
@@ -689,9 +753,10 @@ const statusTone = ref<'ok' | 'warn' | 'error'>('ok')
 const plateCandidates = ref<string[]>([])
 const ocrBestScore = ref(0)
 const ocrSecondScore = ref(0)
-const plateFipeQuota = ref<PlateFipeQuotaInfo | null>(null)
-const plateFipeQuotaLoading = ref(false)
-const plateFipeQuotaError = ref('')
+const plateFipeQuota = useState<PlateFipeQuotaInfo | null>('plateFipeQuota', () => null)
+const plateFipeQuotaLoading = useState<boolean>('plateFipeQuotaLoading', () => false)
+const plateFipeQuotaError = useState<string>('plateFipeQuotaError', () => '')
+const selectingPlateCandidate = ref<string | null>(null)
 
 const targetMarginValue = ref(10000)
 const marginWasEdited = ref(false)
@@ -715,6 +780,7 @@ const showingDetails = ref(false)
 const showSavedCarsList = ref(false)
 const justSaved = ref(false)
 const activeQueueId = ref<string | null>(null)
+const queuePreviewIndex = ref<number | null>(null)
 const photoInputRef = ref<HTMLInputElement | null>(null)
 const photoCameraInputRef = ref<HTMLInputElement | null>(null)
 
@@ -778,6 +844,43 @@ const bestMarginCarId = computed(() => {
     return carProfit > bestProfit ? car : best
   }, localCars.value[0]).id
 })
+
+const isLikelyPlateAmbiguous = (candidates: string[]) => {
+  const normalized = Array.from(new Set(candidates.map((item) => normalizePlate(item)).filter(Boolean)))
+  if (normalized.length < 2) return false
+
+  const byPrefix = new Map<string, number>()
+  for (const candidate of normalized) {
+    if (candidate.length !== 7) continue
+    const prefix = candidate.slice(0, 6)
+    byPrefix.set(prefix, (byPrefix.get(prefix) || 0) + 1)
+  }
+
+  for (const count of byPrefix.values()) {
+    if (count > 1) return true
+  }
+
+  return false
+}
+
+const suggestedPlateCandidates = computed(() => plateCandidates.value.slice(0, 5))
+const hasAmbiguousPlateCandidates = computed(() => isLikelyPlateAmbiguous(plateCandidates.value))
+const queuePreviewItem = computed(() => {
+  if (queuePreviewIndex.value === null) return null
+  return draftQueue.value[queuePreviewIndex.value] || null
+})
+const queuePreviewCandidates = computed(() => {
+  const item = queuePreviewItem.value
+  if (!item) return []
+  const source = item.plateCandidates.length > 0 ? item.plateCandidates : [item.draft.plate]
+  return Array.from(new Set(source.map((value) => normalizePlate(value || '')).filter(Boolean))).slice(0, 5)
+})
+
+const resolvePrimaryPlateCandidate = (candidates: string[], fallback = '') => {
+  const firstCandidate = normalizePlate(candidates[0] || '')
+  if (firstCandidate) return firstCandidate
+  return normalizePlate(fallback || '')
+}
 
 watch(
   () => draft.fipeValue,
@@ -850,6 +953,7 @@ const addToQueue = () => {
     ocrProcessed: ocrProcessed.value,
     ocrSuccess: ocrSuccess.value,
     plateCandidates: [...plateCandidates.value],
+    needsPlateConfirmation: false,
     targetMarginValue: targetMarginValue.value,
     status: 'ready',
   })
@@ -866,8 +970,13 @@ const addToQueue = () => {
 }
 
 const loadFromQueue = (index: number) => {
+  // Persist any pending edits from the currently active queue item
+  // before replacing the draft with another item.
+  syncActiveQueueDraft()
+
   const item = draftQueue.value[index]
   if (!item || item.status !== 'ready') return
+  closeQueuePreview()
 
   // Mark as active (stays in queue)
   activeQueueId.value = item.draft.id
@@ -876,25 +985,77 @@ const loadFromQueue = (index: number) => {
   ocrProcessed.value = item.ocrProcessed
   ocrSuccess.value = item.ocrSuccess
   plateCandidates.value = item.plateCandidates
+  if (item.plateCandidates.length > 0) {
+    const normalizedCurrent = normalizePlate(item.draft.plate || '')
+    if (item.needsPlateConfirmation || !normalizedCurrent || !item.plateCandidates.includes(normalizedCurrent)) {
+      draft.plate = item.plateCandidates[0]
+    }
+  }
   targetMarginValue.value = item.targetMarginValue || suggestMarginByFipe(item.draft.fipeValue)
   marginWasEdited.value = item.draft.fipeValue > 0
-  editingPlate.value = false
+  const hasAmbiguity = item.needsPlateConfirmation || isLikelyPlateAmbiguous(item.plateCandidates)
+  editingPlate.value = hasAmbiguity
   editingMargin.value = false
   editingFipe.value = false
   editingBrandModel.value = false
   addingCost.value = false
   editingCostId.value = null
   showingDetails.value = false
+
+  if (hasAmbiguity) {
+    setStatus(
+      `OCR encontrou placas parecidas (${item.plateCandidates.slice(0, 3).join(', ')}). Confirme antes de salvar.`,
+      'warn',
+    )
+  }
+
   currentStep.value = 2
   window.scrollTo({ top: 0, behavior: 'smooth' })
 }
 
-const removeFromQueue = (index: number) => {
-  draftQueue.value.splice(index, 1)
+const openQueuePreview = (index: number) => {
+  queuePreviewIndex.value = index
 }
 
-const togglePlateEdit = () => {
-  editingPlate.value = !editingPlate.value
+const closeQueuePreview = () => {
+  queuePreviewIndex.value = null
+}
+
+const confirmQueueCandidate = async (candidate: string) => {
+  if (loadingLookup.value) return
+  if (queuePreviewIndex.value === null) return
+  const index = queuePreviewIndex.value
+  const item = draftQueue.value[index]
+  if (!item || item.status !== 'ready') return
+
+  const normalized = normalizePlate(candidate)
+  if (!normalized) return
+
+  selectingPlateCandidate.value = normalized
+  item.draft.plate = normalized
+  item.plateCandidates = [normalized, ...item.plateCandidates.filter((plate) => plate !== normalized)]
+  item.needsPlateConfirmation = false
+  item.ocrSuccess = true
+  if (item.errorMessage?.startsWith('Confirme placa OCR:')) {
+    item.errorMessage = undefined
+  }
+
+  closeQueuePreview()
+  loadFromQueue(index)
+  try {
+    await applyPlateCandidate(normalized)
+  } finally {
+    selectingPlateCandidate.value = null
+  }
+}
+
+const removeFromQueue = (index: number) => {
+  if (queuePreviewIndex.value === index) {
+    closeQueuePreview()
+  } else if (queuePreviewIndex.value !== null && queuePreviewIndex.value > index) {
+    queuePreviewIndex.value -= 1
+  }
+  draftQueue.value.splice(index, 1)
 }
 
 const toggleMarginEdit = () => {
@@ -929,6 +1090,7 @@ const confirmEditCost = (id: string) => {
   if (index !== -1) {
     draft.costs[index] = { ...draft.costs[index], amount }
     setStatus('Custo atualizado.', 'ok')
+    syncActiveQueueDraft()
   }
 
   editingCostId.value = null
@@ -1073,6 +1235,42 @@ const readErrorMessage = (error: unknown) => {
   return 'Falha na operacao.'
 }
 
+const OCR_IMAGE_MAX_SIDE = 1600
+const OCR_IMAGE_QUALITY = 0.82
+
+const loadImageElement = (dataUrl: string) =>
+  new Promise<HTMLImageElement>((resolve, reject) => {
+    const image = new Image()
+    image.onload = () => resolve(image)
+    image.onerror = (event) => reject(event)
+    image.src = dataUrl
+  })
+
+const optimizeImageForOcr = async (dataUrl: string) => {
+  const image = await loadImageElement(dataUrl)
+  const sourceWidth = image.naturalWidth || image.width
+  const sourceHeight = image.naturalHeight || image.height
+
+  if (!sourceWidth || !sourceHeight) return dataUrl
+
+  const longestSide = Math.max(sourceWidth, sourceHeight)
+  const scale = longestSide > OCR_IMAGE_MAX_SIDE ? OCR_IMAGE_MAX_SIDE / longestSide : 1
+  const targetWidth = Math.max(1, Math.round(sourceWidth * scale))
+  const targetHeight = Math.max(1, Math.round(sourceHeight * scale))
+
+  const canvas = document.createElement('canvas')
+  canvas.width = targetWidth
+  canvas.height = targetHeight
+
+  const context = canvas.getContext('2d')
+  if (!context) return dataUrl
+
+  context.drawImage(image, 0, 0, targetWidth, targetHeight)
+  const optimized = canvas.toDataURL('image/jpeg', OCR_IMAGE_QUALITY)
+
+  return optimized.length < dataUrl.length ? optimized : dataUrl
+}
+
 const refreshPlateFipeQuota = async () => {
   plateFipeQuotaLoading.value = true
   plateFipeQuotaError.value = ''
@@ -1088,11 +1286,17 @@ const refreshPlateFipeQuota = async () => {
 }
 
 const applyPlateCandidate = async (candidate: string) => {
+  if (loadingLookup.value) return
   const normalized = normalizePlate(candidate)
   if (!normalized) return
+  selectingPlateCandidate.value = normalized
   draft.plate = normalized
   setStatus(`Placa aplicada: ${normalized}. Consultando FIPE...`, 'ok')
-  await lookupVehicleByPlate(normalized)
+  try {
+    await lookupVehicleByPlate(normalized)
+  } finally {
+    selectingPlateCandidate.value = null
+  }
 }
 
 const lookupVehicleByPlate = async (plate: string) => {
@@ -1104,6 +1308,8 @@ const lookupVehicleByPlate = async (plate: string) => {
 
   draft.plate = normalizedPlate
   loadingLookup.value = true
+  let lookupCompleted = false
+
   try {
     const lookup = await api.lookupPlateAndFipe({ plate: normalizedPlate })
     const { result, warning, detail, quota, cache } = lookup
@@ -1124,9 +1330,21 @@ const lookupVehicleByPlate = async (plate: string) => {
     } else {
       setStatus(`Placa ${normalizedPlate} consultada com sucesso${cacheHint}`, 'ok')
     }
+    lookupCompleted = true
   } catch (error) {
     setStatus(`Placa ${normalizedPlate} identificada, mas falhou consulta FIPE: ${readErrorMessage(error)}`, 'warn')
   } finally {
+    if (lookupCompleted && activeQueueId.value) {
+      const queueIndex = draftQueue.value.findIndex((item) => item.draft.id === activeQueueId.value)
+      if (queueIndex >= 0) {
+        const queueItem = draftQueue.value[queueIndex]
+        queueItem.needsPlateConfirmation = false
+        if (queueItem.errorMessage?.startsWith('Confirme placa OCR:')) {
+          queueItem.errorMessage = undefined
+        }
+        queueItem.ocrSuccess = true
+      }
+    }
     syncActiveQueueDraft()
     loadingLookup.value = false
     void refreshPlateFipeQuota()
@@ -1157,12 +1375,20 @@ const onPhotoSelected = async (event: Event) => {
     reader.readAsDataURL(file)
   })
 
+  let processedPhotoData = fileData
+  try {
+    processedPhotoData = await optimizeImageForOcr(fileData)
+  } catch {
+    processedPhotoData = fileData
+  }
+
   // Add to queue immediately with status 'processing'
   const newItem: DraftQueueItem = {
-    draft: { ...createEmptyDraft(), photoDataUrl: fileData },
+    draft: { ...createEmptyDraft(), photoDataUrl: processedPhotoData },
     ocrProcessed: false,
     ocrSuccess: false,
     plateCandidates: [],
+    needsPlateConfirmation: false,
     targetMarginValue: 10000,
     status: 'processing',
   }
@@ -1194,13 +1420,34 @@ const processQueueItemAsync = async (index: number) => {
     const dedupedCandidates = Array.from(
       new Set(candidates.map((c: { plate?: string }) => normalizePlate(c?.plate || '')).filter(Boolean)),
     )
+    const bestScore = Number(candidates[0]?.confidence ?? result.confidence ?? 0)
+    const secondScore = Number(candidates[1]?.confidence ?? 0)
+    const nearTie = dedupedCandidates.length > 1 && Math.abs(bestScore - secondScore) <= 0.06
+    const engineAmbiguous = Boolean(result.engine?.ambiguous_top_pair)
 
     item.plateCandidates = dedupedCandidates
+    item.needsPlateConfirmation = false
     item.ocrProcessed = true
+    const primaryCandidate = resolvePrimaryPlateCandidate(dedupedCandidates, result.plate || '')
+    if (primaryCandidate) {
+      item.draft.plate = primaryCandidate
+    }
+    const hasAmbiguity = isLikelyPlateAmbiguous(dedupedCandidates) || nearTie || engineAmbiguous
 
     if (result.plate) {
-      item.draft.plate = normalizePlate(result.plate)
       item.ocrSuccess = true
+
+      if (hasAmbiguity) {
+        const hint = dedupedCandidates.length > 0
+          ? dedupedCandidates.slice(0, 3).join(', ')
+          : normalizePlate(result.plate || '')
+        item.needsPlateConfirmation = true
+        item.ocrSuccess = false
+        item.errorMessage = hint ? `Confirme placa OCR: ${hint}` : 'Confirme placa OCR antes da primeira consulta FIPE.'
+        item.status = 'ready'
+        return
+      }
+
       // Fetch FIPE in background
       try {
         const lookup = await api.lookupPlateAndFipe({ plate: item.draft.plate })
@@ -1217,6 +1464,8 @@ const processQueueItemAsync = async (index: number) => {
           item.errorMessage = providerWarning
         } else if (!item.draft.brand && !item.draft.model && item.draft.fipeValue <= 0) {
           item.errorMessage = 'Consulta retornou sem marca/modelo/FIPE.'
+        } else {
+          item.errorMessage = undefined
         }
       } catch (err: unknown) {
         // FIPE failed but plate was found — still mark ready, warn via errorMessage
@@ -1224,6 +1473,7 @@ const processQueueItemAsync = async (index: number) => {
       }
     } else {
       item.ocrSuccess = false
+      item.needsPlateConfirmation = dedupedCandidates.length > 0
       item.errorMessage = dedupedCandidates.length > 0
         ? `OCR sem placa final. Candidatos: ${dedupedCandidates.slice(0, 3).join(', ')}`
         : 'OCR nao identificou placa na imagem.'
@@ -1259,14 +1509,37 @@ const extractPlateFromPhoto = async () => {
     const dedupedCandidates = Array.from(
       new Set(candidates.map((item: { plate?: string }) => normalizePlate(item?.plate || '')).filter(Boolean)),
     )
+    const bestScore = Number(candidates[0]?.confidence ?? result.confidence ?? 0)
+    const secondScore = Number(candidates[1]?.confidence ?? 0)
+    const nearTie = dedupedCandidates.length > 1 && Math.abs(bestScore - secondScore) <= 0.06
+    const engineAmbiguous = Boolean(result.engine?.ambiguous_top_pair)
     plateCandidates.value = dedupedCandidates
-    ocrBestScore.value = Number(candidates[0]?.confidence ?? result.confidence ?? 0)
-    ocrSecondScore.value = Number(candidates[1]?.confidence ?? 0)
+    const primaryCandidate = resolvePrimaryPlateCandidate(dedupedCandidates, result.plate || '')
+    if (primaryCandidate) {
+      draft.plate = primaryCandidate
+    }
+    ocrBestScore.value = bestScore
+    ocrSecondScore.value = secondScore
     ocrProcessed.value = true
 
     if (result.plate) {
-      draft.plate = normalizePlate(result.plate)
       ocrSuccess.value = true
+
+      const hasAmbiguity = isLikelyPlateAmbiguous(dedupedCandidates) || nearTie || engineAmbiguous
+      if (hasAmbiguity) {
+        const hint = dedupedCandidates.length > 0
+          ? dedupedCandidates.slice(0, 3).join(', ')
+          : normalizePlate(result.plate || '')
+        editingPlate.value = true
+        setStatus(
+          hint
+            ? `OCR encontrou candidatos parecidos (${hint}). Confirme a placa antes da consulta.`
+            : 'OCR com baixa confianca para placa final. Confirme a placa antes da consulta.',
+          'warn',
+        )
+        return
+      }
+
       setStatus(`Placa identificada: ${draft.plate}. Consultando FIPE...`, 'ok')
       if (draft.plate) {
         await lookupVehicleByPlate(draft.plate)
@@ -1324,6 +1597,7 @@ const addCostItem = () => {
   if (existingLeilao) {
     existingLeilao.amount = amount
     setStatus('Custo de leilao atualizado.', 'ok')
+    syncActiveQueueDraft()
     newCostAmount.value = 0
     addingCost.value = false
     return
@@ -1342,6 +1616,7 @@ const addCostItem = () => {
   addingCost.value = false
 
   setStatus('Custo adicionado.', 'ok')
+  syncActiveQueueDraft()
 }
 
 const removeCostItem = (id: string) => {
@@ -1356,6 +1631,7 @@ const removeCostItem = (id: string) => {
   }
 
   setStatus('Custo removido.', 'warn')
+  syncActiveQueueDraft()
 }
 
 const resolveMarginPercent = () => {

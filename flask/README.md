@@ -48,6 +48,14 @@ Via variáveis de ambiente:
 - `FLASK_PORT` - Porta do servidor (default: 5000)
 - `FLASK_DEBUG` - Modo debug (default: False)
 - `MAX_IMAGE_BYTES` - Limite de bytes aceito no endpoint base64 (default: 12582912)
+- `PLATE_OCR_MAX_SIDE` - Lado maximo da imagem para processamento OCR (default: 1440)
+- `PLATE_OCR_MAX_FALLBACK_REGIONS` - Quantidade maxima de regioes de fallback OCR (default: 4)
+- `PLATE_OCR_STRONG_CONFIDENCE` - Limiar para parar pipeline cedo quando candidato forte aparece (default: 0.72)
+- `PLATE_OCR_UPSCALE_MAX_SIDE` - Lado maximo para aplicar upscale OCR (default: 900)
+- `PLATE_OCR_PREPROCESS_MAX_PIXELS` - Limite de pixels para preprocessamentos mais pesados (default: 1400000)
+- `PLATE_OCR_PRELOAD_MODELS` - Precarrega YOLO/EasyOCR no boot (default: false)
+- `PLATE_OCR_AMBIGUOUS_DELTA` - Delta maximo de confianca para considerar top-2 ambiguos (default: 0.06)
+- `PLATE_OCR_ZERO_PRIORITY_DELTA` - Delta maximo para priorizar `...0` quando disputar com `...7` no ultimo digito (default: 0.05)
 
 ## Exemplo do endpoint base64
 

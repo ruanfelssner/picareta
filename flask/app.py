@@ -7,6 +7,7 @@ import base64
 import io
 import os
 import re
+from time import perf_counter
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
@@ -36,6 +37,14 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 TEST_DIR = os.path.abspath(os.path.join(BASE_DIR, "..", "data", "test"))
 ALLOWED_EXT = {".jpg", ".jpeg", ".png", ".webp"}
 MAX_IMAGE_BYTES = int(os.environ.get("MAX_IMAGE_BYTES", 12 * 1024 * 1024))
+MAX_PROCESS_SIDE = int(os.environ.get("PLATE_OCR_MAX_SIDE", 1440))
+OCR_STRONG_CONFIDENCE = float(os.environ.get("PLATE_OCR_STRONG_CONFIDENCE", 0.72))
+OCR_MAX_FALLBACK_REGIONS = int(os.environ.get("PLATE_OCR_MAX_FALLBACK_REGIONS", 4))
+OCR_UPSCALE_MAX_SIDE = int(os.environ.get("PLATE_OCR_UPSCALE_MAX_SIDE", 900))
+OCR_PREPROCESS_MAX_PIXELS = int(os.environ.get("PLATE_OCR_PREPROCESS_MAX_PIXELS", 1_400_000))
+OCR_PRELOAD_MODELS = os.environ.get("PLATE_OCR_PRELOAD_MODELS", "false").lower() in ("1", "true", "yes")
+OCR_AMBIGUOUS_DELTA = float(os.environ.get("PLATE_OCR_AMBIGUOUS_DELTA", 0.06))
+OCR_ZERO_PRIORITY_DELTA = float(os.environ.get("PLATE_OCR_ZERO_PRIORITY_DELTA", 0.05))
 PLATE_REGEX = re.compile(r"^[A-Z]{3}[0-9][A-Z0-9][0-9]{2}$")
 TEMPLATE_OLD = "LLLDDDD"
 TEMPLATE_MERCOSUL = "LLLDLDD"
@@ -61,6 +70,11 @@ DIGIT_FROM_LETTER = {
     "S": "5",
     "T": "7",
     "Z": "2",
+}
+# Ambiguidade comum em placas (ex.: 0 <-> 7 em reflexo/sujeira/fonte).
+DIGIT_AMBIGUITY = {
+    "0": ("7",),
+    "7": ("0",),
 }
 
 _ocr_reader = None
@@ -172,6 +186,44 @@ def _coerce_template(token: str, template: str) -> Optional[Tuple[str, int]]:
     return plate, substitutions
 
 
+def _register_candidate(
+    best_by_plate: Dict[str, Dict], candidate: Dict, template_rank: Dict[str, int]
+) -> None:
+    plate = candidate["plate"]
+    prev = best_by_plate.get(plate)
+    if prev is None or (
+        candidate["penalty"],
+        template_rank[candidate["pattern"]],
+    ) < (
+        prev["penalty"],
+        template_rank[prev["pattern"]],
+    ):
+        best_by_plate[plate] = candidate
+
+
+def _expand_digit_ambiguities(plate: str, pattern: str, base_penalty: int) -> List[Dict]:
+    expanded: List[Dict] = []
+    for index, expected in enumerate(pattern):
+        if expected != "D":
+            continue
+        current = plate[index]
+        alternatives = DIGIT_AMBIGUITY.get(current, ())
+        for alt_digit in alternatives:
+            if alt_digit == current:
+                continue
+            alt_plate = f"{plate[:index]}{alt_digit}{plate[index + 1:]}"
+            if not PLATE_REGEX.match(alt_plate):
+                continue
+            expanded.append(
+                {
+                    "plate": alt_plate,
+                    "penalty": base_penalty + 1,
+                    "pattern": pattern,
+                }
+            )
+    return expanded
+
+
 def extract_plate_candidates(text: str) -> List[Dict]:
     token = normalize_text(text)
     if len(token) < 7:
@@ -185,16 +237,16 @@ def extract_plate_candidates(text: str) -> List[Dict]:
         mercosul = _coerce_template(chunk, TEMPLATE_MERCOSUL)
         if old:
             plate, penalty = old
-            prev = best_by_plate.get(plate)
             candidate = {"plate": plate, "penalty": penalty, "pattern": TEMPLATE_OLD}
-            if prev is None or (penalty, template_rank[TEMPLATE_OLD]) < (prev["penalty"], template_rank[prev["pattern"]]):
-                best_by_plate[plate] = candidate
+            _register_candidate(best_by_plate, candidate, template_rank)
+            for alternative in _expand_digit_ambiguities(plate, TEMPLATE_OLD, penalty):
+                _register_candidate(best_by_plate, alternative, template_rank)
         if mercosul:
             plate, penalty = mercosul
-            prev = best_by_plate.get(plate)
             candidate = {"plate": plate, "penalty": penalty, "pattern": TEMPLATE_MERCOSUL}
-            if prev is None or (penalty, template_rank[TEMPLATE_MERCOSUL]) < (prev["penalty"], template_rank[prev["pattern"]]):
-                best_by_plate[plate] = candidate
+            _register_candidate(best_by_plate, candidate, template_rank)
+            for alternative in _expand_digit_ambiguities(plate, TEMPLATE_MERCOSUL, penalty):
+                _register_candidate(best_by_plate, alternative, template_rank)
 
     return sorted(best_by_plate.values(), key=lambda c: (c["penalty"], template_rank[c["pattern"]], c["plate"]))
 
@@ -215,6 +267,39 @@ def _clip_bbox(bbox: List[int], width: int, height: int) -> List[int]:
     x2 = max(0, min(width - 1, x2))
     y2 = max(0, min(height - 1, y2))
     return [x1, y1, x2, y2]
+
+
+def _resize_for_processing(np_img_rgb: np.ndarray) -> Tuple[np.ndarray, float]:
+    if MAX_PROCESS_SIDE <= 0:
+        return np_img_rgb, 1.0
+
+    h, w = np_img_rgb.shape[:2]
+    longest = max(h, w)
+    if longest <= MAX_PROCESS_SIDE:
+        return np_img_rgb, 1.0
+
+    scale = MAX_PROCESS_SIDE / float(longest)
+    new_w = max(1, int(round(w * scale)))
+    new_h = max(1, int(round(h * scale)))
+
+    if cv2 is not None:
+        resized = cv2.resize(np_img_rgb, (new_w, new_h), interpolation=cv2.INTER_AREA)
+    else:
+        resized = np.array(
+            Image.fromarray(np_img_rgb).resize((new_w, new_h), Image.Resampling.BILINEAR)
+        )
+    return resized, scale
+
+
+def _rescale_bbox(bbox: Optional[List[int]], process_scale: float, width: int, height: int) -> Optional[List[int]]:
+    if not bbox:
+        return None
+    if process_scale == 1.0:
+        return _clip_bbox(bbox, width, height)
+
+    inv = 1.0 / process_scale
+    restored = [int(round(value * inv)) for value in bbox]
+    return _clip_bbox(restored, width, height)
 
 
 def get_ocr_reader():
@@ -323,16 +408,29 @@ def _ocr_scan(
 
     detections = []
     # Tenta em variantes para aumentar chance em placas sujas/anguladas/pequenas.
+    # Evita variantes pesadas em imagens grandes para reduzir latência.
+    h, w = np_img_rgb.shape[:2]
+    pixels = h * w
     variants = [(np_img_rgb, 0.0)]
+
     if cv2 is not None:
-        preprocessed = _preprocess_for_ocr(cv2.cvtColor(np_img_rgb, cv2.COLOR_RGB2BGR))[:, :, ::-1]
-        upscaled = _upscale_for_ocr(np_img_rgb, factor=2.0)
-        upscaled_preprocessed = _preprocess_for_ocr(cv2.cvtColor(upscaled, cv2.COLOR_RGB2BGR))[:, :, ::-1]
-        variants.extend([
-            (preprocessed, 0.03),
-            (upscaled, 0.05),
-            (upscaled_preprocessed, 0.08),
-        ])
+        should_preprocess = pixels <= OCR_PREPROCESS_MAX_PIXELS or source.startswith("yolo")
+        should_upscale = max(h, w) <= OCR_UPSCALE_MAX_SIDE or source.startswith("yolo")
+
+        if should_preprocess:
+            preprocessed = _preprocess_for_ocr(cv2.cvtColor(np_img_rgb, cv2.COLOR_RGB2BGR))[:, :, ::-1]
+            variants.append((preprocessed, 0.03))
+
+        if should_upscale:
+            upscale_factor = 1.8 if max(h, w) < 320 else 1.5
+            upscaled = _upscale_for_ocr(np_img_rgb, factor=upscale_factor)
+            variants.append((upscaled, 0.05))
+
+            if should_preprocess and pixels <= (OCR_PREPROCESS_MAX_PIXELS // 2):
+                upscaled_preprocessed = _preprocess_for_ocr(
+                    cv2.cvtColor(upscaled, cv2.COLOR_RGB2BGR)
+                )[:, :, ::-1]
+                variants.append((upscaled_preprocessed, 0.07))
 
     for variant_index, (variant, variant_boost) in enumerate(variants):
         try:
@@ -341,6 +439,8 @@ def _ocr_scan(
                 detail=1,
                 paragraph=False,
                 allowlist="ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
+                decoder="greedy",
+                beamWidth=1,
             )
         except Exception:
             continue
@@ -378,13 +478,14 @@ def _ocr_scan(
 
 def _fallback_regions(np_img_rgb: np.ndarray) -> List[Tuple[str, np.ndarray, Tuple[int, int]]]:
     h, w = np_img_rgb.shape[:2]
-    regions = [("full", np_img_rgb, (0, 0))]
-    regions.append(("bottom_half", np_img_rgb[h // 2:h, 0:w], (0, h // 2)))
-    regions.append(("bottom_third", np_img_rgb[(h * 2) // 3:h, 0:w], (0, (h * 2) // 3)))
+    regions = []
     center_x1, center_x2 = w // 4, (w * 3) // 4
     regions.append(("center_bottom", np_img_rgb[h // 2:h, center_x1:center_x2], (center_x1, h // 2)))
+    regions.append(("bottom_third", np_img_rgb[(h * 2) // 3:h, 0:w], (0, (h * 2) // 3)))
+    regions.append(("bottom_half", np_img_rgb[h // 2:h, 0:w], (0, h // 2)))
     regions.append(("middle_band", np_img_rgb[h // 3:(h * 2) // 3, 0:w], (0, h // 3)))
     regions.append(("center_mid", np_img_rgb[h // 3:h, center_x1:center_x2], (center_x1, h // 3)))
+    regions.append(("full", np_img_rgb, (0, 0)))
     return regions
 
 
@@ -414,43 +515,154 @@ def _dedupe_candidates(candidates: List[Dict], width: int, height: int) -> List[
     return deduped[:10]
 
 
+def _has_strong_candidate(candidates: List[Dict]) -> bool:
+    if not candidates:
+        return False
+    best = max(
+        candidates,
+        key=lambda item: (
+            float(item.get("confidence", 0.0)),
+            -int(item.get("normalization_penalty", 99)),
+        ),
+    )
+    return (
+        float(best.get("confidence", 0.0)) >= OCR_STRONG_CONFIDENCE
+        and int(best.get("normalization_penalty", 99)) <= 1
+    )
+
+
+def _is_ambiguous_top_pair(candidates: List[Dict]) -> bool:
+    if len(candidates) < 2:
+        return False
+
+    first = candidates[0]
+    second = candidates[1]
+
+    first_plate = str(first.get("plate") or "")
+    second_plate = str(second.get("plate") or "")
+    if len(first_plate) != 7 or len(second_plate) != 7:
+        return False
+    if first_plate[:6] != second_plate[:6]:
+        return False
+
+    first_conf = float(first.get("confidence", 0.0))
+    second_conf = float(second.get("confidence", 0.0))
+    return abs(first_conf - second_conf) <= OCR_AMBIGUOUS_DELTA
+
+
+def _prioritize_zero_last_digit(candidates: List[Dict]) -> Tuple[List[Dict], bool]:
+    if len(candidates) < 2:
+        return candidates, False
+
+    ordered = list(candidates)
+    for idx, item in enumerate(ordered):
+        plate = str(item.get("plate") or "")
+        if len(plate) != 7 or not plate.endswith("7"):
+            continue
+
+        paired_plate = f"{plate[:6]}0"
+        zero_idx = next(
+            (index for index, candidate in enumerate(ordered) if str(candidate.get("plate") or "") == paired_plate),
+            None,
+        )
+        if zero_idx is None or zero_idx < idx:
+            continue
+
+        seven_conf = float(item.get("confidence", 0.0))
+        zero_candidate = ordered[zero_idx]
+        zero_conf = float(zero_candidate.get("confidence", 0.0))
+        if (seven_conf - zero_conf) > OCR_ZERO_PRIORITY_DELTA:
+            continue
+
+        seven_penalty = int(item.get("normalization_penalty", 99))
+        zero_penalty = int(zero_candidate.get("normalization_penalty", 99))
+        if (zero_penalty - seven_penalty) > 1:
+            continue
+
+        chosen = ordered.pop(zero_idx)
+        ordered.insert(idx, chosen)
+        return ordered, True
+
+    return ordered, False
+
+
 def recognize_plate(img: Image.Image) -> dict:
-    np_img_rgb = np.array(img.convert("RGB"))
-    height, width = np_img_rgb.shape[:2]
+    started = perf_counter()
+    np_img_original = np.array(img.convert("RGB"))
+    height, width = np_img_original.shape[:2]
+    np_img_rgb, process_scale = _resize_for_processing(np_img_original)
+    proc_height, proc_width = np_img_rgb.shape[:2]
+
     pipeline = []
     candidates = []
+    timings = {}
 
     yolo_model, yolo_model_path, yolo_err = get_yolo_model()
     if yolo_model is not None:
+        yolo_started = perf_counter()
         try:
-            yolo_result = yolo_model.predict(np_img_rgb, conf=0.12, verbose=False)
+            yolo_result = yolo_model.predict(np_img_rgb, conf=0.12, imgsz=640, max_det=4, verbose=False)
             pipeline.append("yolo_plate_crop")
             if yolo_result and len(yolo_result[0].boxes) > 0:
                 boxes = yolo_result[0].boxes
                 for index, box in enumerate(boxes):
                     x1, y1, x2, y2 = [int(v) for v in box.xyxy[0].tolist()]
-                    pad = max(10, int(0.03 * max(width, height)))
+                    pad = max(8, int(0.03 * max(proc_width, proc_height)))
                     x1 = max(0, x1 - pad)
                     y1 = max(0, y1 - pad)
-                    x2 = min(width, x2 + pad)
-                    y2 = min(height, y2 + pad)
+                    x2 = min(proc_width, x2 + pad)
+                    y2 = min(proc_height, y2 + pad)
                     if x2 <= x1 or y2 <= y1:
                         continue
                     crop = np_img_rgb[y1:y2, x1:x2]
                     conf = float(box.conf[0].item()) if box.conf is not None else None
-                    candidates.extend(_ocr_scan(crop, source=f"yolo_box_{index}", offset=(x1, y1), source_confidence=conf))
+                    crop_candidates = _ocr_scan(
+                        crop,
+                        source=f"yolo_box_{index}",
+                        offset=(x1, y1),
+                        source_confidence=conf,
+                    )
+                    candidates.extend(crop_candidates)
+
+                    if _has_strong_candidate(crop_candidates):
+                        pipeline.append(f"yolo_short_circuit:yolo_box_{index}")
+                        break
         except Exception as err:
             pipeline.append(f"yolo_failed:{err}")
+        finally:
+            timings["yolo_ms"] = int(round((perf_counter() - yolo_started) * 1000))
     else:
         pipeline.append("yolo_unavailable")
 
     if not candidates:
+        fallback_started = perf_counter()
         pipeline.append("fallback_ocr_regions")
-        for region_name, region_img, offset in _fallback_regions(np_img_rgb):
-            candidates.extend(_ocr_scan(region_img, source=region_name, offset=offset))
+        regions = _fallback_regions(np_img_rgb)
+        if OCR_MAX_FALLBACK_REGIONS > 0:
+            regions = regions[:OCR_MAX_FALLBACK_REGIONS]
 
-    deduped = _dedupe_candidates(candidates, width, height)
-    best = deduped[0] if deduped else None
+        for region_name, region_img, offset in regions:
+            region_candidates = _ocr_scan(region_img, source=region_name, offset=offset)
+            candidates.extend(region_candidates)
+            if _has_strong_candidate(region_candidates):
+                pipeline.append(f"fallback_short_circuit:{region_name}")
+                break
+
+        timings["fallback_ms"] = int(round((perf_counter() - fallback_started) * 1000))
+
+    deduped = _dedupe_candidates(candidates, proc_width, proc_height)
+    deduped, zero_priority_applied = _prioritize_zero_last_digit(deduped)
+    if zero_priority_applied:
+        pipeline.append("prioritize_zero_last_digit")
+    if process_scale != 1.0:
+        for candidate in deduped:
+            candidate["bbox"] = _rescale_bbox(candidate.get("bbox"), process_scale, width, height)
+    ambiguous_top_pair = _is_ambiguous_top_pair(deduped)
+    best = None if ambiguous_top_pair else (deduped[0] if deduped else None)
+    if ambiguous_top_pair:
+        pipeline.append("ambiguous_top_pair")
+
+    timings["total_ms"] = int(round((perf_counter() - started) * 1000))
 
     return {
         "plate": best["plate"] if best else None,
@@ -462,6 +674,12 @@ def recognize_plate(img: Image.Image) -> dict:
             "yolo_model": yolo_model_path,
             "yolo_error": yolo_err,
             "pipeline": pipeline,
+            "timings_ms": timings,
+            "ambiguous_top_pair": ambiguous_top_pair,
+            "zero_priority_applied": zero_priority_applied,
+            "image_scale": round(process_scale, 4),
+            "input_size": {"width": width, "height": height},
+            "process_size": {"width": proc_width, "height": proc_height},
         },
     }
 
@@ -642,6 +860,16 @@ def _handle_base64_recognition(
         payload["requestId"] = request_id.strip()
 
     return jsonify(payload), 200
+
+
+def _maybe_preload_models():
+    if not OCR_PRELOAD_MODELS:
+        return
+    get_yolo_model()
+    get_ocr_reader()
+
+
+_maybe_preload_models()
 
 
 if __name__ == "__main__":
