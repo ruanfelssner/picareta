@@ -48,7 +48,12 @@
               </div>
               <!-- Status overlay for processing -->
               <div v-if="item.status === 'processing'" class="absolute inset-0 flex items-center justify-center rounded-lg bg-slate-900/60">
-                <div class="h-5 w-5 animate-spin rounded-full border-2 border-white border-t-transparent" />
+                <div class="flex flex-col items-center gap-1">
+                  <div class="h-5 w-5 animate-spin rounded-full border-2 border-white border-t-transparent" />
+                  <p class="text-[10px] font-semibold text-white">
+                    {{ queueItemStageLabel(item) }} {{ formatElapsedMs(getQueueItemElapsedMs(item)) }}
+                  </p>
+                </div>
               </div>
               <!-- Selected checkmark -->
               <div v-if="item.draft.id === activeQueueId" class="absolute inset-0 flex items-center justify-center rounded-lg bg-slate-900/40">
@@ -67,6 +72,13 @@
               :class="item.draft.id === activeQueueId ? 'text-white' : 'text-slate-300'"
             >
               {{ item.status === 'processing' ? '...' : (item.draft.plate || '???') }}
+            </p>
+            <p
+              v-if="queueItemDurationLabel(item)"
+              class="mt-0.5 max-w-[128px] truncate text-center text-[10px] font-semibold"
+              :class="item.status === 'processing' ? 'text-slate-300' : 'text-slate-400'"
+            >
+              {{ queueItemDurationLabel(item) }}
             </p>
             <p
               v-if="item.errorMessage"
@@ -128,7 +140,7 @@
             </p>
 
             <div v-if="queuePreviewItem.status === 'processing'" class="mt-2 inline-flex rounded-md bg-white/90 px-2 py-1 text-xs font-semibold text-slate-700">
-              Processando OCR...
+              Processando {{ queueItemStageLabel(queuePreviewItem) }}: {{ formatElapsedMs(getQueueItemElapsedMs(queuePreviewItem)) }}
             </div>
 
             <div v-else-if="queuePreviewCandidates.length > 0" class="mt-2 flex flex-wrap gap-2">
@@ -275,6 +287,12 @@
 
                 <p v-if="hasAmbiguousPlateCandidates" class="mt-1 text-xs font-semibold text-amber-700">
                   Existem candidatos muito parecidos. Confirme antes da primeira consulta FIPE.
+                </p>
+                <p v-if="activeQueueTimingHint" class="mt-1 text-xs font-semibold text-slate-500">
+                  {{ activeQueueTimingHint }}
+                </p>
+                <p v-if="ocrLearningHint" class="mt-1 text-xs font-semibold text-slate-500">
+                  {{ ocrLearningHint }}
                 </p>
               </div>
 
@@ -641,20 +659,38 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useAuctionCarsApi } from '~/composables/useAuctionCarsApi'
 import { useIndexedAuctionCars } from '~/composables/useIndexedAuctionCars'
 import { calculateAuctionSummary, calculateTotalCosts, normalizePlate } from '@core/shared/valuation'
 import type { AuctionCarRecord, CostItem, PlateFipeQuotaInfo } from '@core/shared/types/auction'
+
+type QueueProcessingStage = 'ocr' | 'fipe' | 'done' | 'error'
+
+type OcrCandidateDetail = {
+  plate: string
+  confidence: number
+  bbox: [number, number, number, number] | null
+}
 
 type DraftQueueItem = {
   draft: DraftState
   ocrProcessed: boolean
   ocrSuccess: boolean
   plateCandidates: string[]
+  rawPlateCandidates: string[]
+  plateCandidateDetails: OcrCandidateDetail[]
   needsPlateConfirmation: boolean
   targetMarginValue: number
   status: 'processing' | 'ready' | 'error'
+  processingStage: QueueProcessingStage
+  processingStartedAt: number | null
+  processingFinishedAt: number | null
+  processingDurationMs: number | null
+  ocrDurationMs: number | null
+  fipeDurationMs: number | null
+  ocrRequestId: string
+  ocrTimingsMs: Record<string, number>
   errorMessage?: string
 }
 
@@ -679,12 +715,30 @@ type CostOption = {
   defaultAmount?: number
 }
 
+type OcrFeedbackProfile = {
+  updatedAt: string
+  totalConfirmations: number
+  correctedConfirmations: number
+  pairWins: Record<string, number>
+  positionCorrections: Record<string, number>
+}
+
+const OCR_FEEDBACK_PROMOTE_THRESHOLD = 2
+
 const createId = () => {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
     return crypto.randomUUID()
   }
   return Math.random().toString(36).slice(2, 12)
 }
+
+const createEmptyOcrFeedbackProfile = (): OcrFeedbackProfile => ({
+  updatedAt: new Date(0).toISOString(),
+  totalConfirmations: 0,
+  correctedConfirmations: 0,
+  pairWins: {},
+  positionCorrections: {},
+})
 
 const costTypeOptions: CostOption[] = [
   { value: 'leilao', label: 'Leilao', defaultAmount: 800 },
@@ -751,12 +805,17 @@ const loadingLookup = ref(false)
 const statusMessage = ref('')
 const statusTone = ref<'ok' | 'warn' | 'error'>('ok')
 const plateCandidates = ref<string[]>([])
+const rawPlateCandidates = ref<string[]>([])
+const plateCandidateDetails = ref<OcrCandidateDetail[]>([])
 const ocrBestScore = ref(0)
 const ocrSecondScore = ref(0)
 const plateFipeQuota = useState<PlateFipeQuotaInfo | null>('plateFipeQuota', () => null)
 const plateFipeQuotaLoading = useState<boolean>('plateFipeQuotaLoading', () => false)
 const plateFipeQuotaError = useState<string>('plateFipeQuotaError', () => '')
 const selectingPlateCandidate = ref<string | null>(null)
+const processingClockMs = ref(Date.now())
+let processingClockInterval: ReturnType<typeof setInterval> | null = null
+const ocrFeedbackProfile = ref<OcrFeedbackProfile>(createEmptyOcrFeedbackProfile())
 
 const targetMarginValue = ref(10000)
 const marginWasEdited = ref(false)
@@ -876,6 +935,358 @@ const queuePreviewCandidates = computed(() => {
   return Array.from(new Set(source.map((value) => normalizePlate(value || '')).filter(Boolean))).slice(0, 5)
 })
 
+const pairKey = (fromPlate: string, toPlate: string) => `${fromPlate}>${toPlate}`
+
+const readPairDelta = (fromPlate: string, toPlate: string) => {
+  const wins = ocrFeedbackProfile.value.pairWins[pairKey(fromPlate, toPlate)] || 0
+  const losses = ocrFeedbackProfile.value.pairWins[pairKey(toPlate, fromPlate)] || 0
+  return wins - losses
+}
+
+const readPositionCorrectionScore = (fromPlate: string, toPlate: string) => {
+  if (!fromPlate || !toPlate || fromPlate.length !== toPlate.length) return 0
+
+  let score = 0
+  for (let index = 0; index < fromPlate.length; index += 1) {
+    const fromChar = fromPlate[index]
+    const toChar = toPlate[index]
+    if (fromChar === toChar) continue
+
+    const positiveKey = `${index}:${fromChar}>${toChar}`
+    const negativeKey = `${index}:${toChar}>${fromChar}`
+    score += Number(ocrFeedbackProfile.value.positionCorrections[positiveKey] || 0)
+    score -= Number(ocrFeedbackProfile.value.positionCorrections[negativeKey] || 0)
+  }
+
+  return score
+}
+
+const prioritizeCandidatesByFeedback = (candidates: string[]) => {
+  const normalized = Array.from(new Set(candidates.map((item) => normalizePlate(item || '')).filter(Boolean)))
+  if (normalized.length <= 1) return normalized
+
+  const baseline = normalized[0]
+  const scored = normalized.map((plate, index) => {
+    if (index === 0) {
+      return {
+        plate,
+        index,
+        score: 0,
+      }
+    }
+
+    const pairScore = readPairDelta(baseline, plate) * 3
+    const positionScore = readPositionCorrectionScore(baseline, plate)
+
+    return {
+      plate,
+      index,
+      score: pairScore + positionScore,
+    }
+  })
+
+  const sorted = [...scored].sort((left, right) => {
+    if (right.score !== left.score) return right.score - left.score
+    return left.index - right.index
+  })
+
+  const top = sorted[0]
+  if (!top || top.plate === baseline) return normalized
+  if (top.score < OCR_FEEDBACK_PROMOTE_THRESHOLD) return normalized
+
+  return sorted.map((entry) => entry.plate)
+}
+
+const countPositionCorrections = computed(() => {
+  return Object.values(ocrFeedbackProfile.value.positionCorrections).reduce(
+    (total, value) => total + Number(value || 0),
+    0,
+  )
+})
+
+const ocrLearningHint = computed(() => {
+  const total = Number(ocrFeedbackProfile.value.totalConfirmations || 0)
+  if (total <= 0) return ''
+  return `Aprendizado compartilhado ativo: ${total} confirmacoes (${countPositionCorrections.value} correcoes).`
+})
+
+const activeQueueItem = computed(() => {
+  if (!activeQueueId.value) return null
+  return draftQueue.value.find((item) => item.draft.id === activeQueueId.value) || null
+})
+
+const markQueueProcessingStarted = (item: DraftQueueItem) => {
+  const startedAt = Date.now()
+  item.status = 'processing'
+  item.processingStage = 'ocr'
+  item.processingStartedAt = startedAt
+  item.processingFinishedAt = null
+  item.processingDurationMs = null
+  item.ocrDurationMs = null
+  item.fipeDurationMs = null
+  item.ocrTimingsMs = {}
+  item.rawPlateCandidates = []
+  item.plateCandidates = []
+  item.plateCandidateDetails = []
+  item.errorMessage = undefined
+}
+
+const markQueueProcessingFinished = (item: DraftQueueItem, status: 'ready' | 'error') => {
+  const finishedAt = Date.now()
+  item.processingFinishedAt = finishedAt
+  item.processingDurationMs = item.processingStartedAt ? Math.max(0, finishedAt - item.processingStartedAt) : null
+  item.processingStage = status === 'ready' ? 'done' : 'error'
+  item.status = status
+}
+
+const getQueueItemElapsedMs = (item: DraftQueueItem) => {
+  if (item.status === 'processing' && item.processingStartedAt) {
+    return Math.max(0, processingClockMs.value - item.processingStartedAt)
+  }
+  return Math.max(0, Number(item.processingDurationMs || 0))
+}
+
+const formatElapsedMs = (milliseconds: number | null | undefined) => {
+  const value = Number(milliseconds || 0)
+  if (!Number.isFinite(value) || value <= 0) return '0.0s'
+  const seconds = value / 1000
+  return `${seconds >= 10 ? seconds.toFixed(1) : seconds.toFixed(2)}s`
+}
+
+const queueItemStageLabel = (item: DraftQueueItem) => {
+  if (item.processingStage === 'fipe') return 'FIPE'
+  if (item.processingStage === 'error') return 'Erro'
+  if (item.processingStage === 'done') return 'Concluido'
+  return 'OCR'
+}
+
+const queueItemDurationLabel = (item: DraftQueueItem) => {
+  if (item.status === 'processing') {
+    return `${queueItemStageLabel(item)} ${formatElapsedMs(getQueueItemElapsedMs(item))}`
+  }
+  if (item.processingDurationMs) {
+    const parts = [`Total ${formatElapsedMs(item.processingDurationMs)}`]
+    if (item.ocrDurationMs) parts.push(`OCR ${formatElapsedMs(item.ocrDurationMs)}`)
+    if (item.fipeDurationMs) parts.push(`FIPE ${formatElapsedMs(item.fipeDurationMs)}`)
+    return parts.join(' | ')
+  }
+  return ''
+}
+
+const activeQueueTimingHint = computed(() => {
+  const item = activeQueueItem.value
+  if (!item) return ''
+  return queueItemDurationLabel(item)
+})
+
+const refreshOcrFeedbackProfile = async () => {
+  try {
+    const response = await api.getPlateFeedbackProfile()
+    ocrFeedbackProfile.value = response.profile || createEmptyOcrFeedbackProfile()
+  } catch {
+    // fallback para perfil em memoria (vazio)
+  }
+}
+
+const normalizeBbox = (bbox: unknown): [number, number, number, number] | null => {
+  if (!Array.isArray(bbox) || bbox.length !== 4) return null
+  const parsed = bbox.map((value) => Math.round(Number(value)))
+  if (parsed.some((value) => !Number.isFinite(value))) return null
+  const [x1, y1, x2, y2] = parsed
+  if (x2 <= x1 || y2 <= y1) return null
+  return [x1, y1, x2, y2]
+}
+
+const buildCandidateDetails = (candidates: Array<{ plate?: string; confidence?: number; bbox?: unknown }>) => {
+  const map = new Map<string, OcrCandidateDetail>()
+  const order: string[] = []
+
+  for (const candidate of candidates) {
+    const plate = normalizePlate(candidate?.plate || '')
+    if (!plate) continue
+    const confidence = Number(candidate?.confidence ?? 0)
+    const bbox = normalizeBbox(candidate?.bbox)
+    if (!map.has(plate)) {
+      order.push(plate)
+      map.set(plate, {
+        plate,
+        confidence,
+        bbox,
+      })
+      continue
+    }
+
+    const existing = map.get(plate)
+    if (!existing) continue
+    if (confidence > existing.confidence) {
+      map.set(plate, {
+        plate,
+        confidence,
+        bbox: bbox || existing.bbox,
+      })
+    }
+  }
+
+  return order
+    .map((plate) => map.get(plate))
+    .filter((item): item is OcrCandidateDetail => Boolean(item))
+}
+
+const reorderCandidateDetails = (orderedPlates: string[], details: OcrCandidateDetail[]) => {
+  const byPlate = new Map(details.map((item) => [item.plate, item] as const))
+  const prioritized: OcrCandidateDetail[] = []
+
+  for (const plate of orderedPlates) {
+    const detail = byPlate.get(plate)
+    if (!detail) continue
+    prioritized.push(detail)
+    byPlate.delete(plate)
+  }
+
+  for (const detail of byPlate.values()) {
+    prioritized.push(detail)
+  }
+
+  return prioritized
+}
+
+const applyFeedbackProfileDelta = (recognizedPlate: string, confirmedPlate: string) => {
+  const next: OcrFeedbackProfile = {
+    ...ocrFeedbackProfile.value,
+    pairWins: { ...ocrFeedbackProfile.value.pairWins },
+    positionCorrections: { ...ocrFeedbackProfile.value.positionCorrections },
+  }
+
+  next.totalConfirmations = Number(next.totalConfirmations || 0) + 1
+  next.updatedAt = new Date().toISOString()
+
+  if (recognizedPlate && recognizedPlate !== confirmedPlate) {
+    next.correctedConfirmations = Number(next.correctedConfirmations || 0) + 1
+    const pairWinKey = pairKey(recognizedPlate, confirmedPlate)
+    next.pairWins[pairWinKey] = Number(next.pairWins[pairWinKey] || 0) + 1
+
+    if (recognizedPlate.length === confirmedPlate.length) {
+      for (let index = 0; index < recognizedPlate.length; index += 1) {
+        const fromChar = recognizedPlate[index]
+        const toChar = confirmedPlate[index]
+        if (fromChar === toChar) continue
+        const correctionKey = `${index}:${fromChar}>${toChar}`
+        next.positionCorrections[correctionKey] = Number(next.positionCorrections[correctionKey] || 0) + 1
+      }
+    }
+  }
+
+  ocrFeedbackProfile.value = next
+}
+
+const resolveCandidateDetailForPlate = (plate: string) => {
+  const normalized = normalizePlate(plate || '')
+  if (!normalized) return null
+  return plateCandidateDetails.value.find((item) => item.plate === normalized) || null
+}
+
+const buildPlateCropPayload = async (bbox: [number, number, number, number] | null) => {
+  if (!bbox || !draft.photoDataUrl) {
+    return {
+      plateCropBase64: undefined,
+      imageSize: undefined,
+    }
+  }
+
+  try {
+    const image = await loadImageElement(draft.photoDataUrl)
+    const width = image.naturalWidth || image.width
+    const height = image.naturalHeight || image.height
+    if (!width || !height) {
+      return {
+        plateCropBase64: undefined,
+        imageSize: undefined,
+      }
+    }
+
+    const [bx1, by1, bx2, by2] = bbox
+    const rawW = Math.max(1, bx2 - bx1)
+    const rawH = Math.max(1, by2 - by1)
+    const pad = Math.max(8, Math.round(Math.max(rawW, rawH) * 0.16))
+
+    const x1 = Math.max(0, bx1 - pad)
+    const y1 = Math.max(0, by1 - pad)
+    const x2 = Math.min(width, bx2 + pad)
+    const y2 = Math.min(height, by2 + pad)
+    const cropW = Math.max(1, x2 - x1)
+    const cropH = Math.max(1, y2 - y1)
+
+    const maxSide = 640
+    const scale = Math.min(1, maxSide / Math.max(cropW, cropH))
+    const targetW = Math.max(1, Math.round(cropW * scale))
+    const targetH = Math.max(1, Math.round(cropH * scale))
+
+    const canvas = document.createElement('canvas')
+    canvas.width = targetW
+    canvas.height = targetH
+
+    const context = canvas.getContext('2d')
+    if (!context) {
+      return {
+        plateCropBase64: undefined,
+        imageSize: { width, height },
+      }
+    }
+
+    context.drawImage(image, x1, y1, cropW, cropH, 0, 0, targetW, targetH)
+
+    return {
+      plateCropBase64: canvas.toDataURL('image/jpeg', 0.9),
+      imageSize: { width, height },
+    }
+  } catch {
+    return {
+      plateCropBase64: undefined,
+      imageSize: undefined,
+    }
+  }
+}
+
+const registerOcrConfirmation = async (payload: {
+  recognizedPlate?: string
+  confirmedPlate: string
+  candidates?: string[]
+  source: 'step2' | 'queue-preview'
+  requestId?: string
+  timingsMs?: Record<string, number>
+}) => {
+  const confirmedPlate = normalizePlate(payload.confirmedPlate || '')
+  if (!confirmedPlate) return
+
+  const recognizedPlate = normalizePlate(payload.recognizedPlate || '')
+  const candidates = Array.from(
+    new Set((payload.candidates || []).map((item) => normalizePlate(item || '')).filter(Boolean)),
+  )
+
+  const detail =
+    resolveCandidateDetailForPlate(confirmedPlate) ||
+    resolveCandidateDetailForPlate(recognizedPlate) ||
+    null
+  const cropPayload = await buildPlateCropPayload(detail?.bbox || null)
+
+  const response = await api.submitPlateFeedback({
+    recognizedPlate,
+    confirmedPlate,
+    candidates,
+    source: payload.source,
+    requestId: payload.requestId,
+    timingsMs: payload.timingsMs,
+    plateCropBase64: cropPayload.plateCropBase64,
+    bbox: detail?.bbox || null,
+    imageSize: cropPayload.imageSize,
+  })
+
+  if (response?.skipped) return
+
+  applyFeedbackProfileDelta(recognizedPlate, confirmedPlate)
+  await refreshOcrFeedbackProfile()
+}
+
 const resolvePrimaryPlateCandidate = (candidates: string[], fallback = '') => {
   const firstCandidate = normalizePlate(candidates[0] || '')
   if (firstCandidate) return firstCandidate
@@ -908,6 +1319,8 @@ const syncActiveQueueDraft = () => {
   }
   current.targetMarginValue = targetMarginValue.value
   current.plateCandidates = [...plateCandidates.value]
+  current.rawPlateCandidates = [...rawPlateCandidates.value]
+  current.plateCandidateDetails = plateCandidateDetails.value.map((item) => ({ ...item }))
   current.ocrProcessed = ocrProcessed.value
   current.ocrSuccess = ocrSuccess.value
 }
@@ -941,6 +1354,8 @@ const clearPhoto = () => {
   ocrProcessed.value = false
   ocrSuccess.value = false
   plateCandidates.value = []
+  rawPlateCandidates.value = []
+  plateCandidateDetails.value = []
   ocrBestScore.value = 0
   ocrSecondScore.value = 0
 }
@@ -953,15 +1368,27 @@ const addToQueue = () => {
     ocrProcessed: ocrProcessed.value,
     ocrSuccess: ocrSuccess.value,
     plateCandidates: [...plateCandidates.value],
+    rawPlateCandidates: [...rawPlateCandidates.value],
+    plateCandidateDetails: plateCandidateDetails.value.map((item) => ({ ...item })),
     needsPlateConfirmation: false,
     targetMarginValue: targetMarginValue.value,
     status: 'ready',
+    processingStage: 'done',
+    processingStartedAt: null,
+    processingFinishedAt: null,
+    processingDurationMs: null,
+    ocrDurationMs: null,
+    fipeDurationMs: null,
+    ocrRequestId: '',
+    ocrTimingsMs: {},
   })
   // reset just the photo/OCR fields, keep on step 1
   applyDraft(createEmptyDraft())
   ocrProcessed.value = false
   ocrSuccess.value = false
   plateCandidates.value = []
+  rawPlateCandidates.value = []
+  plateCandidateDetails.value = []
   ocrBestScore.value = 0
   ocrSecondScore.value = 0
   marginWasEdited.value = false
@@ -984,7 +1411,14 @@ const loadFromQueue = (index: number) => {
   applyDraft(item.draft)
   ocrProcessed.value = item.ocrProcessed
   ocrSuccess.value = item.ocrSuccess
-  plateCandidates.value = item.plateCandidates
+  plateCandidates.value = Array.isArray(item.plateCandidates) ? [...item.plateCandidates] : []
+  rawPlateCandidates.value =
+    Array.isArray(item.rawPlateCandidates) && item.rawPlateCandidates.length > 0
+      ? [...item.rawPlateCandidates]
+      : [...plateCandidates.value]
+  plateCandidateDetails.value = Array.isArray(item.plateCandidateDetails)
+    ? item.plateCandidateDetails.map((detail) => ({ ...detail }))
+    : []
   if (item.plateCandidates.length > 0) {
     const normalizedCurrent = normalizePlate(item.draft.plate || '')
     if (item.needsPlateConfirmation || !normalizedCurrent || !item.plateCandidates.includes(normalizedCurrent)) {
@@ -1034,6 +1468,10 @@ const confirmQueueCandidate = async (candidate: string) => {
   selectingPlateCandidate.value = normalized
   item.draft.plate = normalized
   item.plateCandidates = [normalized, ...item.plateCandidates.filter((plate) => plate !== normalized)]
+  item.plateCandidateDetails = reorderCandidateDetails(
+    item.plateCandidates,
+    Array.isArray(item.plateCandidateDetails) ? item.plateCandidateDetails : [],
+  )
   item.needsPlateConfirmation = false
   item.ocrSuccess = true
   if (item.errorMessage?.startsWith('Confirme placa OCR:')) {
@@ -1043,7 +1481,7 @@ const confirmQueueCandidate = async (candidate: string) => {
   closeQueuePreview()
   loadFromQueue(index)
   try {
-    await applyPlateCandidate(normalized)
+    await applyPlateCandidate(normalized, 'queue-preview')
   } finally {
     selectingPlateCandidate.value = null
   }
@@ -1167,6 +1605,8 @@ const applyDraft = (value: DraftState) => {
 const clearDraft = () => {
   applyDraft(createEmptyDraft())
   plateCandidates.value = []
+  rawPlateCandidates.value = []
+  plateCandidateDetails.value = []
   ocrBestScore.value = 0
   ocrSecondScore.value = 0
   ocrProcessed.value = false
@@ -1285,10 +1725,36 @@ const refreshPlateFipeQuota = async () => {
   }
 }
 
-const applyPlateCandidate = async (candidate: string) => {
+const resolveFeedbackCandidates = () => {
+  const source = rawPlateCandidates.value.length > 0 ? rawPlateCandidates.value : plateCandidates.value
+  return Array.from(new Set(source.map((item) => normalizePlate(item || '')).filter(Boolean))).slice(0, 10)
+}
+
+const applyPlateCandidate = async (candidate: string, source: 'step2' | 'queue-preview' = 'step2') => {
   if (loadingLookup.value) return
   const normalized = normalizePlate(candidate)
   if (!normalized) return
+
+  const feedbackCandidates = resolveFeedbackCandidates()
+  const recognizedPlate = normalizePlate(feedbackCandidates[0] || '')
+  const isUsefulFeedback =
+    Boolean(!recognizedPlate) ||
+    recognizedPlate !== normalized ||
+    feedbackCandidates.length > 1
+
+  if (isUsefulFeedback) {
+    void registerOcrConfirmation({
+      recognizedPlate,
+      confirmedPlate: normalized,
+      candidates: feedbackCandidates,
+      source,
+      requestId: activeQueueItem.value?.ocrRequestId,
+      timingsMs: activeQueueItem.value?.ocrTimingsMs,
+    }).catch(() => {
+      // feedback nao pode bloquear a consulta FIPE
+    })
+  }
+
   selectingPlateCandidate.value = normalized
   draft.plate = normalized
   setStatus(`Placa aplicada: ${normalized}. Consultando FIPE...`, 'ok')
@@ -1388,9 +1854,19 @@ const onPhotoSelected = async (event: Event) => {
     ocrProcessed: false,
     ocrSuccess: false,
     plateCandidates: [],
+    rawPlateCandidates: [],
+    plateCandidateDetails: [],
     needsPlateConfirmation: false,
     targetMarginValue: 10000,
     status: 'processing',
+    processingStage: 'ocr',
+    processingStartedAt: Date.now(),
+    processingFinishedAt: null,
+    processingDurationMs: null,
+    ocrDurationMs: null,
+    fipeDurationMs: null,
+    ocrRequestId: '',
+    ocrTimingsMs: {},
   }
   draftQueue.value.push(newItem)
   const queueIndex = draftQueue.value.length - 1
@@ -1404,9 +1880,17 @@ const onPhotoSelected = async (event: Event) => {
 const processQueueItemAsync = async (index: number) => {
   const item = draftQueue.value[index]
   if (!item || !item.draft.photoDataUrl) {
-    if (item) { item.status = 'error' }
+    if (item) {
+      item.ocrProcessed = true
+      item.ocrSuccess = false
+      item.errorMessage = 'Imagem invalida para OCR.'
+      markQueueProcessingFinished(item, 'error')
+    }
     return
   }
+
+  markQueueProcessingStarted(item)
+  const ocrStartedAt = Date.now()
 
   try {
     const response = await api.extractPlateFromImage({
@@ -1415,17 +1899,26 @@ const processQueueItemAsync = async (index: number) => {
       requestId: createId(),
     })
 
+    const ocrElapsedMs = Math.max(0, Date.now() - ocrStartedAt)
     const { result } = response
     const candidates = Array.isArray(result.candidates) ? result.candidates : []
-    const dedupedCandidates = Array.from(
+    const candidateDetails = buildCandidateDetails(candidates)
+    const rawCandidates = Array.from(
       new Set(candidates.map((c: { plate?: string }) => normalizePlate(c?.plate || '')).filter(Boolean)),
     )
+    const dedupedCandidates = prioritizeCandidatesByFeedback(rawCandidates)
+    const sortedDetails = reorderCandidateDetails(dedupedCandidates, candidateDetails)
     const bestScore = Number(candidates[0]?.confidence ?? result.confidence ?? 0)
     const secondScore = Number(candidates[1]?.confidence ?? 0)
     const nearTie = dedupedCandidates.length > 1 && Math.abs(bestScore - secondScore) <= 0.06
     const engineAmbiguous = Boolean(result.engine?.ambiguous_top_pair)
 
+    item.ocrRequestId = String(response.requestId || '')
+    item.ocrTimingsMs = result.engine?.timings_ms || {}
+    item.ocrDurationMs = Number(result.engine?.timings_ms?.total_ms || 0) || ocrElapsedMs
+    item.rawPlateCandidates = rawCandidates
     item.plateCandidates = dedupedCandidates
+    item.plateCandidateDetails = sortedDetails
     item.needsPlateConfirmation = false
     item.ocrProcessed = true
     const primaryCandidate = resolvePrimaryPlateCandidate(dedupedCandidates, result.plate || '')
@@ -1444,11 +1937,13 @@ const processQueueItemAsync = async (index: number) => {
         item.needsPlateConfirmation = true
         item.ocrSuccess = false
         item.errorMessage = hint ? `Confirme placa OCR: ${hint}` : 'Confirme placa OCR antes da primeira consulta FIPE.'
-        item.status = 'ready'
+        markQueueProcessingFinished(item, 'ready')
         return
       }
 
       // Fetch FIPE in background
+      item.processingStage = 'fipe'
+      const fipeStartedAt = Date.now()
       try {
         const lookup = await api.lookupPlateAndFipe({ plate: item.draft.plate })
         const { result: fipeResult, warning, detail, quota } = lookup
@@ -1470,6 +1965,8 @@ const processQueueItemAsync = async (index: number) => {
       } catch (err: unknown) {
         // FIPE failed but plate was found — still mark ready, warn via errorMessage
         item.errorMessage = `FIPE: ${readErrorMessage(err)}`
+      } finally {
+        item.fipeDurationMs = Math.max(0, Date.now() - fipeStartedAt)
       }
     } else {
       item.ocrSuccess = false
@@ -1479,12 +1976,12 @@ const processQueueItemAsync = async (index: number) => {
         : 'OCR nao identificou placa na imagem.'
     }
 
-    item.status = 'ready'
+    markQueueProcessingFinished(item, 'ready')
   } catch (err: unknown) {
     item.ocrProcessed = true
     item.ocrSuccess = false
-    item.status = 'error'
     item.errorMessage = readErrorMessage(err)
+    markQueueProcessingFinished(item, 'error')
   }
 }
 
@@ -1497,6 +1994,7 @@ const extractPlateFromPhoto = async () => {
   loadingLookup.value = true
 
   try {
+    const ocrStartedAt = Date.now()
     const response = await api.extractPlateFromImage({
       imageBase64: draft.photoDataUrl,
       filename: 'camera-upload',
@@ -1504,16 +2002,23 @@ const extractPlateFromPhoto = async () => {
     })
 
     const { result } = response
+    const measuredOcrMs = Math.max(0, Date.now() - ocrStartedAt)
 
     const candidates = Array.isArray(result.candidates) ? result.candidates : []
-    const dedupedCandidates = Array.from(
+    const candidateDetails = buildCandidateDetails(candidates)
+    const rawCandidates = Array.from(
       new Set(candidates.map((item: { plate?: string }) => normalizePlate(item?.plate || '')).filter(Boolean)),
     )
+    const dedupedCandidates = prioritizeCandidatesByFeedback(rawCandidates)
+    const sortedDetails = reorderCandidateDetails(dedupedCandidates, candidateDetails)
     const bestScore = Number(candidates[0]?.confidence ?? result.confidence ?? 0)
     const secondScore = Number(candidates[1]?.confidence ?? 0)
     const nearTie = dedupedCandidates.length > 1 && Math.abs(bestScore - secondScore) <= 0.06
     const engineAmbiguous = Boolean(result.engine?.ambiguous_top_pair)
+    const ocrDurationMs = Number(result.engine?.timings_ms?.total_ms || 0) || measuredOcrMs
+    rawPlateCandidates.value = rawCandidates
     plateCandidates.value = dedupedCandidates
+    plateCandidateDetails.value = sortedDetails
     const primaryCandidate = resolvePrimaryPlateCandidate(dedupedCandidates, result.plate || '')
     if (primaryCandidate) {
       draft.plate = primaryCandidate
@@ -1540,7 +2045,7 @@ const extractPlateFromPhoto = async () => {
         return
       }
 
-      setStatus(`Placa identificada: ${draft.plate}. Consultando FIPE...`, 'ok')
+      setStatus(`Placa identificada: ${draft.plate}. Consultando FIPE... OCR ${formatElapsedMs(ocrDurationMs)}.`, 'ok')
       if (draft.plate) {
         await lookupVehicleByPlate(draft.plate)
       }
@@ -1550,10 +2055,13 @@ const extractPlateFromPhoto = async () => {
     ocrSuccess.value = false
     const topCandidates = dedupedCandidates.slice(0, 3)
     const candidatesHint = topCandidates.length > 0 ? ` Candidatos: ${topCandidates.join(', ')}.` : ''
-    setStatus('OCR com baixa confiança.' + candidatesHint, 'warn')
+    setStatus(`OCR com baixa confiança em ${formatElapsedMs(ocrDurationMs)}.` + candidatesHint, 'warn')
   } catch (error) {
     ocrProcessed.value = true
     ocrSuccess.value = false
+    plateCandidates.value = []
+    rawPlateCandidates.value = []
+    plateCandidateDetails.value = []
     setStatus(readErrorMessage(error), 'error')
   } finally {
     loadingLookup.value = false
@@ -1733,6 +2241,8 @@ const loadFromLocal = (record: AuctionCarRecord) => {
   })
 
   plateCandidates.value = []
+  rawPlateCandidates.value = []
+  plateCandidateDetails.value = []
   ocrBestScore.value = 0
   ocrSecondScore.value = 0
   ocrProcessed.value = true
@@ -1758,6 +2268,14 @@ const removeLocal = async (id: string) => {
 }
 
 onMounted(async () => {
+  if (import.meta.client && processingClockInterval === null) {
+    processingClockMs.value = Date.now()
+    processingClockInterval = window.setInterval(() => {
+      processingClockMs.value = Date.now()
+    }, 250)
+  }
+
+  await refreshOcrFeedbackProfile()
   await refreshPlateFipeQuota()
 
   if (!indexedDb.isSupported) {
@@ -1766,5 +2284,12 @@ onMounted(async () => {
   }
 
   await reloadLocal()
+})
+
+onBeforeUnmount(() => {
+  if (processingClockInterval !== null) {
+    clearInterval(processingClockInterval)
+    processingClockInterval = null
+  }
 })
 </script>

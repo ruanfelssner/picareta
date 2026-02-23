@@ -31,6 +31,29 @@ type PlateRecognitionResult = {
   }
 }
 
+type PlateOcrFeedbackPayload = {
+  recognizedPlate?: string
+  confirmedPlate: string
+  candidates?: string[]
+  requestId?: string
+  source?: string
+  timingsMs?: Record<string, number>
+  plateCropBase64?: string
+  bbox?: [number, number, number, number] | null
+  imageSize?: {
+    width: number
+    height: number
+  }
+}
+
+type PlateFeedbackProfile = {
+  totalConfirmations: number
+  correctedConfirmations: number
+  pairWins: Record<string, number>
+  positionCorrections: Record<string, number>
+  updatedAt: string
+}
+
 export function useAuctionCarsApi() {
   const listRemoteCars = async (limit = 50) =>
     $fetch<{ items: AuctionCarRecord[]; collection: string }>('/api/v1/auction-cars', {
@@ -85,6 +108,25 @@ export function useAuctionCarsApi() {
     })
   }
 
+  const submitPlateFeedback = async (payload: PlateOcrFeedbackPayload) =>
+    $fetch<{
+      ok: boolean
+      savedAt?: string
+      skipped?: boolean
+      reason?: string
+      usefulReason?: 'corrected' | 'ambiguous' | 'missing_recognition'
+    }>('/api/v1/plate/feedback', {
+      method: 'POST',
+      body: payload,
+    })
+
+  const getPlateFeedbackProfile = async () =>
+    $fetch<{
+      profile: PlateFeedbackProfile
+    }>('/api/v1/plate/feedback-profile', {
+      method: 'GET',
+    })
+
   return {
     listRemoteCars,
     saveRemoteCar,
@@ -92,5 +134,7 @@ export function useAuctionCarsApi() {
     lookupPlateAndFipe,
     getPlateFipeQuotas,
     extractPlateFromImage,
+    submitPlateFeedback,
+    getPlateFeedbackProfile,
   }
 }

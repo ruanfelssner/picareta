@@ -20,6 +20,12 @@ O projeto Picareta precisa permitir avaliacao rapida de carros de leilao no celu
 - RF-02.10: ao apresentar candidatos do OCR, a primeira sugestao deve vir selecionada por padrao.
 - RF-02.11: no preview da fila, candidatos OCR devem ficar sobrepostos na imagem e a confirmacao deve ocorrer ao tocar no candidato (sem botao extra de preencher).
 - RF-02.12: ao tocar em um candidato de placa (Step 2 ou preview da fila), o sistema deve entrar em loading e consultar Placa FIPE imediatamente.
+- RF-02.13: cada foto na fila deve exibir contador de tempo de processamento em tempo real (etapa OCR/FIPE) e duracao final ao concluir.
+- RF-02.14: confirmacoes manuais de placa devem alimentar aprendizado compartilhado (persistido no backend em Mongo) para repriorizar candidatos OCR semelhantes em novas imagens.
+- RF-02.15: cada confirmacao manual deve registrar: placa reconhecida, placa confirmada, candidatos, `bbox` e `crop` da placa em base64 para formar dataset treinavel.
+- RF-02.16: disponibilizar endpoint de perfil agregado de feedback OCR para o frontend consumir pesos de repriorizacao sem depender de `localStorage`.
+- RF-02.17: disponibilizar rotina Python diaria para consumir a colecao de feedback OCR e exportar dataset treinavel.
+- RF-02.18: persistir apenas feedback util de OCR (correcao real, ambiguidade confirmada ou falha de reconhecimento), descartando confirmacoes redundantes sem ganho de treino.
 - RF-03: consultar dados de placa/FIPE via API externa (quando configurada).
 - RF-03.1: consulta de placa/FIPE deve ocorrer por placa informada manualmente.
 - RF-03.2: integrar com `https://api.placafipe.com.br` usando `POST /getplacafipe` como consulta principal da placa + valor FIPE.
