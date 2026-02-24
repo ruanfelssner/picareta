@@ -58,6 +58,9 @@ OCR_SUPPORT_HIT_BOOST = 0.02
 OCR_SUPPORT_SOURCE_BOOST = 0.02
 OCR_SUPPORT_HIT_BOOST_MAX = 0.08
 OCR_SUPPORT_SOURCE_BOOST_MAX = 0.04
+OCR_POSITION_BOOST_MAX = 0.06
+OCR_LOW_CERTAINTY_CONFIDENCE = 0.72
+OCR_MERCOSUL_MIDDLE_PRIORITY_DELTA = 0.05
 PLATE_REGEX = re.compile(r"^[A-Z]{3}[0-9][A-Z0-9][0-9]{2}$")
 TEMPLATE_OLD = "LLLDDDD"
 TEMPLATE_MERCOSUL = "LLLDLDD"
@@ -88,6 +91,21 @@ DIGIT_FROM_LETTER = {
 DIGIT_AMBIGUITY = {
     "0": ("7",),
     "7": ("0",),
+}
+# Ambiguidade visual comum em letras (ex.: perspectiva/reflexo/fonte).
+LETTER_AMBIGUITY = {
+    "A": ("R",),
+    "R": ("A", "K"),
+    "T": ("Y", "I"),
+    "Y": ("T", "V"),
+    "U": ("O", "V"),
+    "O": ("U", "Q", "D"),
+    "D": ("O", "Q"),
+    "V": ("Y", "U"),
+    "M": ("N",),
+    "N": ("M",),
+    "K": ("R", "X"),
+    "X": ("K",),
 }
 
 _ocr_reader = None
@@ -129,6 +147,33 @@ def _bbox_score_adjustment(bbox: Optional[List[int]]) -> float:
     if ratio < 1.4 or ratio > 10.0:
         return -0.03
     return 0.0
+
+
+def _position_score_adjustment(bbox: Optional[List[int]], width: int, height: int) -> float:
+    if not bbox or width <= 0 or height <= 0:
+        return 0.0
+    x1, y1, x2, y2 = bbox
+    cx = ((x1 + x2) / 2.0) / float(width)
+    cy = ((y1 + y2) / 2.0) / float(height)
+
+    score = 0.0
+    # Placa traseira normalmente aparece na metade inferior da foto.
+    if cy >= 0.60:
+        score += 0.04
+    elif cy < 0.45:
+        score -= 0.04
+
+    # Em geral fica proxima ao centro horizontal.
+    if abs(cx - 0.5) <= 0.30:
+        score += 0.01
+    else:
+        score -= 0.01
+
+    if score > OCR_POSITION_BOOST_MAX:
+        return OCR_POSITION_BOOST_MAX
+    if score < -OCR_POSITION_BOOST_MAX:
+        return -OCR_POSITION_BOOST_MAX
+    return score
 
 
 def list_test_images():
@@ -271,6 +316,64 @@ def _expand_digit_ambiguities(plate: str, pattern: str, base_penalty: int) -> Li
     return expanded
 
 
+def _expand_letter_ambiguities(plate: str, pattern: str, base_penalty: int) -> List[Dict]:
+    letter_positions = [index for index, expected in enumerate(pattern) if expected == "L"]
+    if not letter_positions:
+        return []
+
+    # Limita combinacoes para evitar explosao de candidatos.
+    max_changes = 3
+    max_generated = 24
+    options = []
+    for index in letter_positions:
+        alternatives = tuple(ch for ch in LETTER_AMBIGUITY.get(plate[index], ()) if ch != plate[index])
+        if alternatives:
+            options.append((index, alternatives))
+    if not options:
+        return []
+
+    generated: Dict[str, Dict] = {}
+    chars = list(plate)
+
+    def visit(position: int, changed_positions: List[int]):
+        if len(generated) >= max_generated:
+            return
+        if position == len(options):
+            if not changed_positions:
+                return
+            alt_plate = "".join(chars)
+            if not PLATE_REGEX.match(alt_plate):
+                return
+            candidate_penalty = base_penalty + len(changed_positions)
+            prev = generated.get(alt_plate)
+            if prev is None or candidate_penalty < prev["penalty"]:
+                generated[alt_plate] = {
+                    "plate": alt_plate,
+                    "penalty": candidate_penalty,
+                    "pattern": pattern,
+                }
+            return
+
+        index, alternatives = options[position]
+        original = chars[index]
+
+        # Caminho sem alteracao.
+        visit(position + 1, changed_positions)
+
+        # Caminhos com alteracao.
+        if len(changed_positions) >= max_changes:
+            return
+        for alt in alternatives:
+            chars[index] = alt
+            changed_positions.append(index)
+            visit(position + 1, changed_positions)
+            changed_positions.pop()
+            chars[index] = original
+
+    visit(0, [])
+    return sorted(generated.values(), key=lambda item: (item["penalty"], item["plate"]))
+
+
 def extract_plate_candidates(text: str) -> List[Dict]:
     token = normalize_text(text)
     if len(token) < 7:
@@ -288,12 +391,18 @@ def extract_plate_candidates(text: str) -> List[Dict]:
             _register_candidate(best_by_plate, candidate, template_rank)
             for alternative in _expand_digit_ambiguities(plate, TEMPLATE_OLD, penalty):
                 _register_candidate(best_by_plate, alternative, template_rank)
+            if penalty <= 2:
+                for alternative in _expand_letter_ambiguities(plate, TEMPLATE_OLD, penalty):
+                    _register_candidate(best_by_plate, alternative, template_rank)
         if mercosul:
             plate, penalty = mercosul
             candidate = {"plate": plate, "penalty": penalty, "pattern": TEMPLATE_MERCOSUL}
             _register_candidate(best_by_plate, candidate, template_rank)
             for alternative in _expand_digit_ambiguities(plate, TEMPLATE_MERCOSUL, penalty):
                 _register_candidate(best_by_plate, alternative, template_rank)
+            if penalty <= 2:
+                for alternative in _expand_letter_ambiguities(plate, TEMPLATE_MERCOSUL, penalty):
+                    _register_candidate(best_by_plate, alternative, template_rank)
 
     return sorted(best_by_plate.values(), key=lambda c: (c["penalty"], template_rank[c["pattern"]], c["plate"]))
 
@@ -589,10 +698,13 @@ def _dedupe_candidates(candidates: List[Dict], width: int, height: int) -> List[
             max(0, source_count - 1) * OCR_SUPPORT_SOURCE_BOOST,
         )
         support_boost = hit_boost + source_boost
+        position_boost = _position_score_adjustment(best_item.get("bbox"), width, height)
+        total_boost = support_boost + position_boost
         best_item["support_hits"] = hits
         best_item["support_sources"] = source_count
         best_item["support_boost"] = round(support_boost, 4)
-        best_item["confidence"] = min(1.0, round(float(best_item["confidence"]) + support_boost, 4))
+        best_item["position_boost"] = round(position_boost, 4)
+        best_item["confidence"] = min(1.0, round(float(best_item["confidence"]) + total_boost, 4))
         deduped.append(best_item)
 
     deduped.sort(
@@ -629,12 +741,57 @@ def _is_ambiguous_top_pair(candidates: List[Dict]) -> bool:
     second_plate = str(second.get("plate") or "")
     if len(first_plate) != 7 or len(second_plate) != 7:
         return False
-    if first_plate[:6] != second_plate[:6]:
-        return False
 
     first_conf = float(first.get("confidence", 0.0))
     second_conf = float(second.get("confidence", 0.0))
-    return abs(first_conf - second_conf) <= OCR_AMBIGUOUS_DELTA
+    if abs(first_conf - second_conf) > OCR_AMBIGUOUS_DELTA:
+        return False
+
+    if first_plate[:6] == second_plate[:6]:
+        return True
+
+    return _is_middle_char_letter_digit_ambiguous_pair(first_plate, second_plate)
+
+
+def _is_middle_char_letter_digit_ambiguous_pair(plate_a: str, plate_b: str) -> bool:
+    if len(plate_a) != 7 or len(plate_b) != 7:
+        return False
+    if plate_a[:4] != plate_b[:4] or plate_a[5:] != plate_b[5:]:
+        return False
+    c1 = plate_a[4]
+    c2 = plate_b[4]
+    if c1 == c2:
+        return False
+    if c1.isdigit() and LETTER_FROM_DIGIT.get(c1) == c2:
+        return True
+    if c2.isdigit() and LETTER_FROM_DIGIT.get(c2) == c1:
+        return True
+    if c1.isalpha() and DIGIT_FROM_LETTER.get(c1) == c2:
+        return True
+    if c2.isalpha() and DIGIT_FROM_LETTER.get(c2) == c1:
+        return True
+    return False
+
+
+def _is_low_certainty_best(candidates: List[Dict]) -> bool:
+    if not candidates:
+        return False
+
+    best = candidates[0]
+    conf = float(best.get("confidence", 0.0))
+    hits = int(best.get("support_hits", 1) or 1)
+    penalty = int(best.get("normalization_penalty", 99))
+    source = str(best.get("source") or "")
+
+    if conf < 0.62:
+        return True
+    if conf < OCR_LOW_CERTAINTY_CONFIDENCE and hits <= 1:
+        return True
+    if penalty >= 2 and conf < 0.80:
+        return True
+    if source in ("full", "middle_band", "rescue_full") and conf < 0.86:
+        return True
+    return False
 
 
 def _prioritize_zero_last_digit(candidates: List[Dict]) -> Tuple[List[Dict], bool]:
@@ -667,6 +824,46 @@ def _prioritize_zero_last_digit(candidates: List[Dict]) -> Tuple[List[Dict], boo
             continue
 
         chosen = ordered.pop(zero_idx)
+        ordered.insert(idx, chosen)
+        return ordered, True
+
+    return ordered, False
+
+
+def _prioritize_mercosul_middle_letter(candidates: List[Dict]) -> Tuple[List[Dict], bool]:
+    if len(candidates) < 2:
+        return candidates, False
+
+    ordered = list(candidates)
+    for idx, item in enumerate(ordered):
+        plate = str(item.get("plate") or "")
+        if len(plate) != 7 or not plate[4].isdigit():
+            continue
+
+        letter_variant = LETTER_FROM_DIGIT.get(plate[4])
+        if not letter_variant:
+            continue
+
+        mercosul_plate = f"{plate[:4]}{letter_variant}{plate[5:]}"
+        letter_idx = next(
+            (index for index, candidate in enumerate(ordered) if str(candidate.get("plate") or "") == mercosul_plate),
+            None,
+        )
+        if letter_idx is None or letter_idx < idx:
+            continue
+
+        digit_conf = float(item.get("confidence", 0.0))
+        letter_candidate = ordered[letter_idx]
+        letter_conf = float(letter_candidate.get("confidence", 0.0))
+        if (digit_conf - letter_conf) > OCR_MERCOSUL_MIDDLE_PRIORITY_DELTA:
+            continue
+
+        digit_penalty = int(item.get("normalization_penalty", 99))
+        letter_penalty = int(letter_candidate.get("normalization_penalty", 99))
+        if (letter_penalty - digit_penalty) > 1:
+            continue
+
+        chosen = ordered.pop(letter_idx)
         ordered.insert(idx, chosen)
         return ordered, True
 
@@ -799,11 +996,18 @@ def recognize_plate(img: Image.Image) -> dict:
     deduped, zero_priority_applied = _prioritize_zero_last_digit(deduped)
     if zero_priority_applied:
         pipeline.append("prioritize_zero_last_digit")
+    deduped, mercosul_middle_priority_applied = _prioritize_mercosul_middle_letter(deduped)
+    if mercosul_middle_priority_applied:
+        pipeline.append("prioritize_mercosul_middle_letter")
     if process_scale != 1.0:
         for candidate in deduped:
             candidate["bbox"] = _rescale_bbox(candidate.get("bbox"), process_scale, width, height)
     ambiguous_top_pair = _is_ambiguous_top_pair(deduped)
-    best = None if ambiguous_top_pair else (deduped[0] if deduped else None)
+    low_certainty = _is_low_certainty_best(deduped)
+    if low_certainty:
+        pipeline.append("low_certainty_best")
+    requires_confirmation = ambiguous_top_pair or low_certainty
+    best = None if requires_confirmation else (deduped[0] if deduped else None)
     if ambiguous_top_pair:
         pipeline.append("ambiguous_top_pair")
 
@@ -823,7 +1027,10 @@ def recognize_plate(img: Image.Image) -> dict:
             "pipeline": pipeline,
             "timings_ms": timings,
             "ambiguous_top_pair": ambiguous_top_pair,
+            "low_certainty": low_certainty,
+            "requires_confirmation": requires_confirmation,
             "zero_priority_applied": zero_priority_applied,
+            "mercosul_middle_priority_applied": mercosul_middle_priority_applied,
             "image_scale": round(process_scale, 4),
             "input_size": {"width": width, "height": height},
             "process_size": {"width": proc_width, "height": proc_height},
