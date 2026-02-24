@@ -47,11 +47,13 @@ OCR_PRELOAD_MODELS = True
 OCR_AMBIGUOUS_DELTA = 0.06
 OCR_ZERO_PRIORITY_DELTA = 0.05
 OCR_MAX_PROCESS_MS = 30_000
-OCR_MAX_VARIANTS = 2
-OCR_NO_YOLO_MAX_FALLBACK_REGIONS = 2
-OCR_MIN_TEXT_CONFIDENCE = 0.18
+OCR_MAX_VARIANTS = 3
+OCR_NO_YOLO_MAX_FALLBACK_REGIONS = 3
+OCR_MIN_TEXT_CONFIDENCE = 0.14
 OCR_YOLO_IMGSZ = 640
 OCR_YOLO_MAX_DET = 3
+OCR_RESCUE_MAX_VARIANTS = 4
+OCR_RESCUE_MIN_TEXT_CONFIDENCE = 0.08
 PLATE_REGEX = re.compile(r"^[A-Z]{3}[0-9][A-Z0-9][0-9]{2}$")
 TEMPLATE_OLD = "LLLDDDD"
 TEMPLATE_MERCOSUL = "LLLDLDD"
@@ -407,6 +409,8 @@ def _ocr_scan(
     offset: Tuple[int, int] = (0, 0),
     source_confidence: Optional[float] = None,
     deadline_at: Optional[float] = None,
+    max_variants: Optional[int] = None,
+    min_text_confidence: Optional[float] = None,
 ) -> List[Dict]:
     reader, err = get_ocr_reader()
     if err:
@@ -444,8 +448,11 @@ def _ocr_scan(
                 )[:, :, ::-1]
                 variants.append((upscaled_preprocessed, 0.07))
 
-    if OCR_MAX_VARIANTS > 0:
-        variants = variants[:OCR_MAX_VARIANTS]
+    variant_limit = OCR_MAX_VARIANTS if max_variants is None else int(max_variants)
+    if variant_limit > 0:
+        variants = variants[:variant_limit]
+
+    min_conf = OCR_MIN_TEXT_CONFIDENCE if min_text_confidence is None else float(min_text_confidence)
 
     for variant_index, (variant, variant_boost) in enumerate(variants):
         if _is_deadline_reached(deadline_at):
@@ -463,7 +470,7 @@ def _ocr_scan(
             continue
 
         for box, text, conf in read:
-            if float(conf) < OCR_MIN_TEXT_CONFIDENCE and not source.startswith("yolo"):
+            if float(conf) < min_conf and not source.startswith("yolo"):
                 continue
             matches = extract_plate_candidates(text)
             if not matches:
@@ -694,6 +701,34 @@ def recognize_plate(img: Image.Image) -> dict:
                 break
 
         timings["fallback_ms"] = int(round((perf_counter() - fallback_started) * 1000))
+
+        # Se YOLO estiver indisponivel e o fallback padrao falhar, roda um passe de resgate
+        # mais tolerante antes de desistir.
+        if not candidates and yolo_model is None and not _is_deadline_reached(deadline_at):
+            rescue_started = perf_counter()
+            pipeline.append("fallback_rescue_no_yolo")
+            rescue_regions = [
+                ("rescue_bottom_half", np_img_rgb[proc_height // 2:proc_height, 0:proc_width], (0, proc_height // 2)),
+                ("rescue_full", np_img_rgb, (0, 0)),
+            ]
+            for region_name, region_img, offset in rescue_regions:
+                if _is_deadline_reached(deadline_at):
+                    timeout_reached = True
+                    pipeline.append("deadline_reached:rescue_regions")
+                    break
+                rescue_candidates = _ocr_scan(
+                    region_img,
+                    source=region_name,
+                    offset=offset,
+                    deadline_at=deadline_at,
+                    max_variants=OCR_RESCUE_MAX_VARIANTS,
+                    min_text_confidence=OCR_RESCUE_MIN_TEXT_CONFIDENCE,
+                )
+                candidates.extend(rescue_candidates)
+                if _has_strong_candidate(rescue_candidates):
+                    pipeline.append(f"rescue_short_circuit:{region_name}")
+                    break
+            timings["fallback_rescue_ms"] = int(round((perf_counter() - rescue_started) * 1000))
     elif not candidates and _is_deadline_reached(deadline_at):
         timeout_reached = True
         pipeline.append("deadline_reached:before_fallback")
