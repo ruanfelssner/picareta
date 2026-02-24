@@ -27,6 +27,7 @@ O projeto Picareta precisa permitir avaliacao rapida de carros de leilao no celu
 - RF-02.17: disponibilizar rotina Python diaria para consumir a colecao de feedback OCR e exportar dataset treinavel.
 - RF-02.18: persistir apenas feedback util de OCR (correcao real, ambiguidade confirmada ou falha de reconhecimento), descartando confirmacoes redundantes sem ganho de treino.
 - RF-02.19: parametros de performance OCR/Gunicorn devem usar perfil fixo de producao no codigo (sem depender de novas env vars de tuning).
+- RF-02.20: suportar bootstrap de templates de caracteres a partir de `public/fontes.svg` para reranquear candidatos OCR em cenarios de baixa confianca.
 - RF-03: consultar dados de placa/FIPE via API externa (quando configurada).
 - RF-03.1: consulta de placa/FIPE deve ocorrer por placa informada manualmente.
 - RF-03.2: integrar com `https://api.placafipe.com.br` usando `POST /getplacafipe` como consulta principal da placa + valor FIPE.

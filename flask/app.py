@@ -5,6 +5,7 @@ from flask import Flask, jsonify, request
 from flask_cors import CORS
 import base64
 import io
+import json
 import os
 import re
 from time import perf_counter
@@ -61,6 +62,14 @@ OCR_SUPPORT_SOURCE_BOOST_MAX = 0.04
 OCR_POSITION_BOOST_MAX = 0.06
 OCR_LOW_CERTAINTY_CONFIDENCE = 0.72
 OCR_MERCOSUL_MIDDLE_PRIORITY_DELTA = 0.05
+OCR_TEMPLATE_RERANK_THRESHOLD = 0.88
+OCR_TEMPLATE_RERANK_TOP_N = 80
+OCR_TEMPLATE_RERANK_MIN_SCORE = 0.45
+OCR_TEMPLATE_RERANK_BOOST_MAX = 0.22
+OCR_TEMPLATE_CHAR_MATCH_WEIGHT = 0.55
+OCR_CANDIDATE_POOL_LIMIT = 80
+OCR_RESPONSE_CANDIDATES_LIMIT = 20
+OCR_TEMPLATE_PATH = os.path.join(BASE_DIR, "models", "char_templates.json")
 PLATE_REGEX = re.compile(r"^[A-Z]{3}[0-9][A-Z0-9][0-9]{2}$")
 TEMPLATE_OLD = "LLLDDDD"
 TEMPLATE_MERCOSUL = "LLLDLDD"
@@ -107,12 +116,27 @@ LETTER_AMBIGUITY = {
     "K": ("R", "X"),
     "X": ("K",),
 }
+LETTER_CHANGE_COST = {
+    ("A", "R"): 0.35,
+    ("R", "A"): 0.45,
+    ("T", "Y"): 0.30,
+    ("Y", "T"): 0.35,
+    ("U", "O"): 0.30,
+    ("O", "U"): 0.45,
+    ("U", "V"): 0.40,
+    ("V", "Y"): 0.45,
+    ("D", "O"): 0.40,
+    ("O", "D"): 0.55,
+}
 
 _ocr_reader = None
 _ocr_error = None
 _yolo_model = None
 _yolo_error = None
 _yolo_model_path = None
+_char_templates = None
+_char_templates_error = None
+_char_templates_meta = {}
 
 
 def _is_deadline_reached(deadline_at: Optional[float]) -> bool:
@@ -180,6 +204,294 @@ def _position_score_adjustment(bbox: Optional[List[int]], width: int, height: in
     if score < -OCR_POSITION_BOOST_MAX:
         return -OCR_POSITION_BOOST_MAX
     return score
+
+
+def _decode_template_png(value: str) -> Optional[np.ndarray]:
+    if not value:
+        return None
+    try:
+        raw = base64.b64decode(value, validate=True)
+    except Exception:
+        return None
+    if not raw:
+        return None
+    if cv2 is not None:
+        arr = np.frombuffer(raw, dtype=np.uint8)
+        img = cv2.imdecode(arr, cv2.IMREAD_GRAYSCALE)
+    else:
+        try:
+            img = np.array(Image.open(io.BytesIO(raw)).convert("L"))
+        except Exception:
+            return None
+    if img is None or img.size == 0:
+        return None
+    return (img > 127).astype(np.uint8)
+
+
+def get_char_templates() -> Tuple[Optional[Dict[str, np.ndarray]], Optional[Dict], Optional[str]]:
+    global _char_templates, _char_templates_error, _char_templates_meta
+    if _char_templates is not None:
+        return _char_templates, _char_templates_meta, None
+    if _char_templates_error is not None:
+        return None, None, _char_templates_error
+    if not os.path.isfile(OCR_TEMPLATE_PATH):
+        _char_templates_error = (
+            "char templates indisponiveis. Gere com "
+            "`python flask/scripts/build_char_templates_from_svg.py`"
+        )
+        return None, None, _char_templates_error
+    try:
+        with open(OCR_TEMPLATE_PATH, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+        raw_templates = payload.get("templates") or {}
+        loaded: Dict[str, np.ndarray] = {}
+        for ch, encoded in raw_templates.items():
+            if not isinstance(ch, str) or len(ch) != 1:
+                continue
+            if not isinstance(encoded, str):
+                continue
+            decoded = _decode_template_png(encoded)
+            if decoded is None:
+                continue
+            loaded[ch.upper()] = decoded
+        if not loaded:
+            _char_templates_error = "arquivo de char templates sem dados validos"
+            return None, None, _char_templates_error
+        size = payload.get("template_size") or {}
+        _char_templates_meta = {
+            "path": OCR_TEMPLATE_PATH,
+            "template_width": int(size.get("width") or 0),
+            "template_height": int(size.get("height") or 0),
+            "charset": str(payload.get("charset") or ""),
+            "count": len(loaded),
+        }
+        _char_templates = loaded
+        return _char_templates, _char_templates_meta, None
+    except Exception as err:
+        _char_templates_error = str(err)
+        return None, None, _char_templates_error
+
+
+def _resize_binary_keep_aspect(binary: np.ndarray, width: int, height: int) -> np.ndarray:
+    if binary.size == 0:
+        return np.zeros((height, width), dtype=np.uint8)
+    h, w = binary.shape[:2]
+    if h <= 0 or w <= 0:
+        return np.zeros((height, width), dtype=np.uint8)
+    scale = min(width / float(w), height / float(h))
+    new_w = max(1, int(round(w * scale)))
+    new_h = max(1, int(round(h * scale)))
+    if cv2 is not None:
+        resized = cv2.resize(binary, (new_w, new_h), interpolation=cv2.INTER_NEAREST)
+    else:
+        resized = np.array(
+            Image.fromarray((binary * 255).astype(np.uint8)).resize(
+                (new_w, new_h),
+                Image.Resampling.NEAREST,
+            )
+        )
+        resized = (resized > 127).astype(np.uint8)
+    canvas = np.zeros((height, width), dtype=np.uint8)
+    off_y = max(0, (height - new_h) // 2)
+    off_x = max(0, (width - new_w) // 2)
+    canvas[off_y:off_y + new_h, off_x:off_x + new_w] = (resized > 0).astype(np.uint8)
+    return canvas
+
+
+def _extract_char_patches(np_img_rgb: np.ndarray, bbox: Optional[List[int]], template_w: int, template_h: int) -> List[np.ndarray]:
+    if cv2 is None or not bbox or template_w <= 0 or template_h <= 0:
+        return []
+    h, w = np_img_rgb.shape[:2]
+    x1, y1, x2, y2 = _clip_bbox(list(bbox), w, h)
+    if x2 <= x1 or y2 <= y1:
+        return []
+
+    pad_x = max(2, int(round((x2 - x1) * 0.04)))
+    pad_y = max(2, int(round((y2 - y1) * 0.08)))
+    x1 = max(0, x1 - pad_x)
+    y1 = max(0, y1 - pad_y)
+    x2 = min(w, x2 + pad_x)
+    y2 = min(h, y2 + pad_y)
+    roi = np_img_rgb[y1:y2, x1:x2]
+    if roi.size == 0:
+        return []
+
+    gray = cv2.cvtColor(roi, cv2.COLOR_RGB2GRAY)
+    gray = cv2.bilateralFilter(gray, 9, 40, 40)
+    thr = cv2.adaptiveThreshold(
+        gray,
+        255,
+        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv2.THRESH_BINARY_INV,
+        33,
+        7,
+    )
+    thr = cv2.morphologyEx(thr, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
+    thr = cv2.morphologyEx(thr, cv2.MORPH_CLOSE, np.ones((2, 2), np.uint8))
+
+    found = cv2.findContours(thr, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    contours = found[0] if len(found) == 2 else found[1]
+    if not contours:
+        return []
+
+    roi_h, roi_w = thr.shape[:2]
+    boxes = []
+    for contour in contours:
+        cx, cy, cw, ch = cv2.boundingRect(contour)
+        if cw <= 0 or ch <= 0:
+            continue
+        area = cw * ch
+        if area < int(roi_w * roi_h * 0.002):
+            continue
+        if ch < int(roi_h * 0.26):
+            continue
+        if cw > int(roi_w * 0.48):
+            continue
+        boxes.append((cx, cy, cw, ch, area))
+    if not boxes:
+        return []
+
+    boxes.sort(key=lambda item: item[0])
+    if len(boxes) > 9:
+        boxes = sorted(boxes, key=lambda item: item[4], reverse=True)[:9]
+        boxes.sort(key=lambda item: item[0])
+
+    patches: List[np.ndarray] = []
+    for cx, cy, cw, ch, _ in boxes:
+        char_img = thr[cy:cy + ch, cx:cx + cw]
+        if char_img.size == 0:
+            continue
+        norm = _resize_binary_keep_aspect((char_img > 0).astype(np.uint8), template_w, template_h)
+        patches.append(norm)
+
+    slot_patches = _extract_char_patches_by_slots(thr, template_w, template_h)
+    if len(patches) < 5:
+        return slot_patches
+
+    # Ajusta para 7 caracteres (placa) preservando ordem da esquerda para direita.
+    if len(patches) > 7:
+        idxs = np.linspace(0, len(patches) - 1, 7).astype(int).tolist()
+        patches = [patches[index] for index in idxs]
+    elif len(patches) < 7:
+        return slot_patches if len(slot_patches) == 7 else []
+    return patches[:7]
+
+
+def _extract_char_patches_by_slots(threshold_binary: np.ndarray, template_w: int, template_h: int) -> List[np.ndarray]:
+    if threshold_binary.size == 0:
+        return []
+    roi_h, roi_w = threshold_binary.shape[:2]
+    if roi_h <= 0 or roi_w <= 0:
+        return []
+
+    patches: List[np.ndarray] = []
+    for index in range(7):
+        x1 = int(round((index * roi_w) / 7.0))
+        x2 = int(round(((index + 1) * roi_w) / 7.0))
+        if x2 <= x1:
+            continue
+        slot = threshold_binary[:, x1:x2]
+        ys, xs = np.where(slot > 0)
+        if ys.size > 0 and xs.size > 0:
+            y1, y2 = int(ys.min()), int(ys.max())
+            sx1, sx2 = int(xs.min()), int(xs.max())
+            slot = slot[y1:y2 + 1, sx1:sx2 + 1]
+        patch = _resize_binary_keep_aspect((slot > 0).astype(np.uint8), template_w, template_h)
+        patches.append(patch)
+    return patches if len(patches) == 7 else []
+
+
+def _template_similarity(char_patch: np.ndarray, template: np.ndarray) -> float:
+    if char_patch.shape != template.shape:
+        return 0.0
+    diff = np.abs(char_patch.astype(np.float32) - template.astype(np.float32))
+    return float(1.0 - diff.mean())
+
+
+def _candidate_template_score(plate: str, char_patches: List[np.ndarray], templates: Dict[str, np.ndarray]) -> float:
+    if len(plate) != 7 or len(char_patches) != 7:
+        return 0.0
+    # Prefixo da placa (3 letras) recebe peso maior para reduzir erros recorrentes.
+    weights = (1.35, 1.25, 1.25, 0.95, 1.0, 0.95, 0.95)
+    weighted_total = 0.0
+    weight_sum = 0.0
+    for ch, patch, weight in zip(plate, char_patches, weights):
+        template = templates.get(ch)
+        if template is None:
+            return 0.0
+        similarity = _template_similarity(patch, template)
+        weighted_total += similarity * float(weight)
+        weight_sum += float(weight)
+    if weight_sum <= 0:
+        return 0.0
+    return float(weighted_total / weight_sum)
+
+
+def _apply_template_rerank(
+    candidates: List[Dict],
+    np_img_rgb: np.ndarray,
+    pipeline: List[str],
+) -> Tuple[List[Dict], Optional[str], Optional[Dict]]:
+    if not candidates:
+        return candidates, None, None
+
+    top_conf = float(candidates[0].get("confidence", 0.0))
+    if top_conf >= OCR_TEMPLATE_RERANK_THRESHOLD:
+        return candidates, None, None
+
+    templates, meta, err = get_char_templates()
+    if err:
+        pipeline.append("template_rerank_skipped")
+        return candidates, err, None
+    assert templates is not None
+    assert meta is not None
+
+    template_w = int(meta.get("template_width") or 0)
+    template_h = int(meta.get("template_height") or 0)
+    if template_w <= 0 or template_h <= 0:
+        first_template = next(iter(templates.values()))
+        template_h, template_w = first_template.shape[:2]
+
+    anchor_bbox = candidates[0].get("bbox")
+    char_patches = _extract_char_patches(np_img_rgb, anchor_bbox, template_w, template_h)
+    if len(char_patches) != 7:
+        pipeline.append("template_rerank_no_char_patches")
+        return candidates, None, {
+            "applied": False,
+            "reason": "no_char_patches",
+            "template_count": len(templates),
+        }
+
+    rerank_limit = min(len(candidates), OCR_TEMPLATE_RERANK_TOP_N)
+    for item in candidates[:rerank_limit]:
+        plate = str(item.get("plate") or "")
+        if len(plate) != 7:
+            continue
+        score = _candidate_template_score(plate, char_patches, templates)
+        item["template_score"] = round(score, 4)
+        if score >= OCR_TEMPLATE_RERANK_MIN_SCORE:
+            boost = min(
+                OCR_TEMPLATE_RERANK_BOOST_MAX,
+                max(0.0, score - OCR_TEMPLATE_RERANK_MIN_SCORE) * OCR_TEMPLATE_CHAR_MATCH_WEIGHT,
+            )
+            item["template_boost"] = round(boost, 4)
+            item["confidence"] = min(1.0, round(float(item.get("confidence", 0.0)) + boost, 4))
+        else:
+            item["template_boost"] = 0.0
+
+    reranked = sorted(
+        candidates,
+        key=lambda x: (float(x.get("confidence", 0.0)), -float(x.get("normalization_penalty", 99.0))),
+        reverse=True,
+    )
+    pipeline.append("template_rerank")
+    return reranked, None, {
+        "applied": True,
+        "template_count": len(templates),
+        "template_width": template_w,
+        "template_height": template_h,
+        "rerank_limit": rerank_limit,
+    }
 
 
 def list_test_images():
@@ -341,7 +653,7 @@ def _expand_letter_ambiguities(plate: str, pattern: str, base_penalty: int) -> L
     generated: Dict[str, Dict] = {}
     chars = list(plate)
 
-    def visit(position: int, changed_positions: List[int]):
+    def visit(position: int, changed_positions: List[int], extra_cost: float):
         if len(generated) >= max_generated:
             return
         if position == len(options):
@@ -350,14 +662,7 @@ def _expand_letter_ambiguities(plate: str, pattern: str, base_penalty: int) -> L
             alt_plate = "".join(chars)
             if not PLATE_REGEX.match(alt_plate):
                 return
-            change_count = len(changed_positions)
-            prefix_only = all(index <= 2 for index in changed_positions)
-            if prefix_only:
-                # Erros no prefixo (3 letras iniciais) sao comuns em perspectiva,
-                # entao reduzimos um pouco a penalidade para nao enterrar o candidato.
-                candidate_penalty = base_penalty + ((change_count + 1) // 2)
-            else:
-                candidate_penalty = base_penalty + change_count
+            candidate_penalty = float(base_penalty) + float(extra_cost)
             prev = generated.get(alt_plate)
             if prev is None or candidate_penalty < prev["penalty"]:
                 generated[alt_plate] = {
@@ -371,7 +676,7 @@ def _expand_letter_ambiguities(plate: str, pattern: str, base_penalty: int) -> L
         original = chars[index]
 
         # Caminho sem alteracao.
-        visit(position + 1, changed_positions)
+        visit(position + 1, changed_positions, extra_cost)
 
         # Caminhos com alteracao.
         if len(changed_positions) >= max_changes:
@@ -379,11 +684,14 @@ def _expand_letter_ambiguities(plate: str, pattern: str, base_penalty: int) -> L
         for alt in alternatives:
             chars[index] = alt
             changed_positions.append(index)
-            visit(position + 1, changed_positions)
+            change_cost = float(LETTER_CHANGE_COST.get((original, alt), 1.0))
+            if index <= 2:
+                change_cost = min(change_cost, 0.45)
+            visit(position + 1, changed_positions, extra_cost + change_cost)
             changed_positions.pop()
             chars[index] = original
 
-    visit(0, [])
+    visit(0, [], 0.0)
     return sorted(generated.values(), key=lambda item: (item["penalty"], item["plate"]))
 
 
@@ -635,7 +943,7 @@ def _ocr_scan(
             bbox = _bbox_from_easyocr(box, offset)
             for match in matches:
                 plate = match["plate"]
-                penalty = int(match["penalty"])
+                penalty = float(match["penalty"])
                 score = float(conf)
                 score += source_boost
                 if source_confidence is not None:
@@ -653,7 +961,7 @@ def _ocr_scan(
                     "source": source,
                     "raw_text": text,
                     "ocr_confidence": round(float(conf), 4),
-                    "normalization_penalty": penalty,
+                    "normalization_penalty": round(penalty, 3),
                     "pattern": match["pattern"],
                 })
         if _has_strong_candidate(detections):
@@ -745,13 +1053,18 @@ def _plate_contour_regions(np_img_rgb: np.ndarray) -> List[Tuple[str, np.ndarray
 
         seen_boxes.append(box)
         regions.append((f"contour_plate_{len(regions)}", crop, (x1, y1)))
-        if len(regions) >= 6:
+        if len(regions) >= 3:
             break
 
     return regions
 
 
-def _dedupe_candidates(candidates: List[Dict], width: int, height: int) -> List[Dict]:
+def _dedupe_candidates(
+    candidates: List[Dict],
+    width: int,
+    height: int,
+    limit: Optional[int] = None,
+) -> List[Dict]:
     by_plate: Dict[str, Dict] = {}
     for item in candidates:
         plate = item.get("plate")
@@ -801,7 +1114,9 @@ def _dedupe_candidates(candidates: List[Dict], width: int, height: int) -> List[
         key=lambda x: (x["confidence"], -x.get("normalization_penalty", 99)),
         reverse=True,
     )
-    return deduped[:10]
+    if limit is not None and limit > 0:
+        return deduped[:limit]
+    return deduped
 
 
 def _has_strong_candidate(candidates: List[Dict]) -> bool:
@@ -811,12 +1126,12 @@ def _has_strong_candidate(candidates: List[Dict]) -> bool:
         candidates,
         key=lambda item: (
             float(item.get("confidence", 0.0)),
-            -int(item.get("normalization_penalty", 99)),
+            -float(item.get("normalization_penalty", 99.0)),
         ),
     )
     return (
         float(best.get("confidence", 0.0)) >= OCR_STRONG_CONFIDENCE
-        and int(best.get("normalization_penalty", 99)) <= 1
+        and float(best.get("normalization_penalty", 99.0)) <= 1.0
     )
 
 
@@ -870,7 +1185,7 @@ def _is_low_certainty_best(candidates: List[Dict]) -> bool:
     best = candidates[0]
     conf = float(best.get("confidence", 0.0))
     hits = int(best.get("support_hits", 1) or 1)
-    penalty = int(best.get("normalization_penalty", 99))
+    penalty = float(best.get("normalization_penalty", 99.0))
     source = str(best.get("source") or "")
 
     if conf < 0.62:
@@ -908,8 +1223,8 @@ def _prioritize_zero_last_digit(candidates: List[Dict]) -> Tuple[List[Dict], boo
         if (seven_conf - zero_conf) > OCR_ZERO_PRIORITY_DELTA:
             continue
 
-        seven_penalty = int(item.get("normalization_penalty", 99))
-        zero_penalty = int(zero_candidate.get("normalization_penalty", 99))
+        seven_penalty = float(item.get("normalization_penalty", 99.0))
+        zero_penalty = float(zero_candidate.get("normalization_penalty", 99.0))
         if (zero_penalty - seven_penalty) > 1:
             continue
 
@@ -948,8 +1263,8 @@ def _prioritize_mercosul_middle_letter(candidates: List[Dict]) -> Tuple[List[Dic
         if (digit_conf - letter_conf) > OCR_MERCOSUL_MIDDLE_PRIORITY_DELTA:
             continue
 
-        digit_penalty = int(item.get("normalization_penalty", 99))
-        letter_penalty = int(letter_candidate.get("normalization_penalty", 99))
+        digit_penalty = float(item.get("normalization_penalty", 99.0))
+        letter_penalty = float(letter_candidate.get("normalization_penalty", 99.0))
         if (letter_penalty - digit_penalty) > 1:
             continue
 
@@ -1036,6 +1351,8 @@ def recognize_plate(img: Image.Image) -> dict:
                     source=region_name,
                     offset=offset,
                     deadline_at=deadline_at,
+                    max_variants=2,
+                    min_text_confidence=0.10,
                 )
                 candidates.extend(contour_candidates)
                 if _has_strong_candidate(contour_candidates):
@@ -1104,16 +1421,35 @@ def recognize_plate(img: Image.Image) -> dict:
     if _is_deadline_reached(deadline_at):
         timeout_reached = True
 
-    deduped = _dedupe_candidates(candidates, proc_width, proc_height)
+    deduped = _dedupe_candidates(
+        candidates,
+        proc_width,
+        proc_height,
+        limit=OCR_CANDIDATE_POOL_LIMIT,
+    )
     deduped, zero_priority_applied = _prioritize_zero_last_digit(deduped)
     if zero_priority_applied:
         pipeline.append("prioritize_zero_last_digit")
     deduped, mercosul_middle_priority_applied = _prioritize_mercosul_middle_letter(deduped)
     if mercosul_middle_priority_applied:
         pipeline.append("prioritize_mercosul_middle_letter")
+
+    template_rerank_error = None
+    template_rerank_info = None
+    if deduped and not _is_deadline_reached(deadline_at):
+        template_started = perf_counter()
+        deduped, template_rerank_error, template_rerank_info = _apply_template_rerank(
+            deduped,
+            np_img_rgb,
+            pipeline,
+        )
+        timings["template_rerank_ms"] = int(round((perf_counter() - template_started) * 1000))
+
     if process_scale != 1.0:
         for candidate in deduped:
             candidate["bbox"] = _rescale_bbox(candidate.get("bbox"), process_scale, width, height)
+    if OCR_RESPONSE_CANDIDATES_LIMIT > 0:
+        deduped = deduped[:OCR_RESPONSE_CANDIDATES_LIMIT]
     ambiguous_top_pair = _is_ambiguous_top_pair(deduped)
     low_certainty = _is_low_certainty_best(deduped)
     if low_certainty:
@@ -1143,6 +1479,8 @@ def recognize_plate(img: Image.Image) -> dict:
             "requires_confirmation": requires_confirmation,
             "zero_priority_applied": zero_priority_applied,
             "mercosul_middle_priority_applied": mercosul_middle_priority_applied,
+            "template_rerank": template_rerank_info,
+            "template_rerank_error": template_rerank_error,
             "image_scale": round(process_scale, 4),
             "input_size": {"width": width, "height": height},
             "process_size": {"width": proc_width, "height": proc_height},
@@ -1333,6 +1671,7 @@ def _maybe_preload_models():
         return
     get_yolo_model()
     get_ocr_reader()
+    get_char_templates()
 
 
 _maybe_preload_models()

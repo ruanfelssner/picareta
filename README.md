@@ -132,6 +132,17 @@ pnpm build            # Build de produção do Nuxt
 pnpm lint             # Lint do código
 ```
 
+## Treino Inicial de Caracteres OCR
+
+Para gerar templates de caracteres (A-Z/0-9) a partir de `public/fontes.svg`:
+
+```bash
+python flask/scripts/build_char_templates_from_svg.py --debug-preview
+```
+
+Arquivo gerado: `flask/models/char_templates.json` (usado no rerank de OCR em baixa confianca).
+Com esse JSON versionado no repositorio/deploy, o Flask carrega no boot e nao exige job em producao.
+
 ## Variáveis de Ambiente
 
 Ver [.env.example](.env.example) para todas as opções.

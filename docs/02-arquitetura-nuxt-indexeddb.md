@@ -72,6 +72,7 @@ flask/                    # Backend Python
 6. Nuxt server encaminha OCR para Flask interno via `NUXT_FLASK_BASE_URL` (padrao `127.0.0.1:5000`).
 6.1. Se OCR retornar candidatos ambiguos (mesma base de placa, digito final diferente), o frontend abre edicao de placa e bloqueia consulta FIPE automatica ate confirmacao manual.
 6.2. Quando houver disputa `0` x `7` no ultimo digito com confianca quase empatada, o backend prioriza `...0` na lista de candidatos (limiar fixo de producao), sem remover a confirmacao manual.
+6.3. Em baixa confianca, backend aplica `template_rerank` com templates de caracteres gerados do `public/fontes.svg` (`flask/models/char_templates.json`), carregados no boot do Flask.
 7. Consulta placa/FIPE acontece via `POST /api/v1/plate-fipe/lookup`.
 7.0. Quando `NUXT_PLACA_FIPE_MOCK=true`, backend responde com mock deterministico por placa e nao chama provider externo.
 7.1. Backend chama `POST /getplacafipe` na API oficial `api.placafipe.com.br` e usa `POST /getplaca` apenas como fallback de dados do veiculo.
@@ -89,6 +90,7 @@ flask/                    # Backend Python
 - **Proxy Nuxt para OCR**: evita chamada browser -> `localhost:5000` em producao e elimina dependencia de CORS para OCR interno.
 - **Supervisor**: gerencia múltiplos processos (Nuxt + Flask) em um único container Docker (produção).
 - **Perfil OCR/Gunicorn fixo**: tuning de producao embutido no codigo para reduzir configuracao manual de ambiente.
+- **Bootstrap por fonte vetorial**: templates A-Z/0-9 extraidos de `fontes.svg` reforcam o rerank de candidatos em OCR fraco.
 - **PWA com service worker**: permite instalacao no celular e suporte de uso em modo app (standalone).
 - Cache por placa no backend: reduz custo de quota ao reaproveitar consultas anteriores.
 - Modo mock por env (`NUXT_PLACA_FIPE_MOCK`): habilita testes sem custo de quota.

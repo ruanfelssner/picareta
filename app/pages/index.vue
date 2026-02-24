@@ -424,26 +424,28 @@
               </button>
             </div>
 
-            <div v-if="addingCost" class="mb-4 space-y-2 rounded-lg bg-slate-50 p-3">
-              <select v-model="newCostType" class="field-input" @change="onCostTypeChange">
-                <option v-for="option in costTypeOptions" :key="option.value" :value="option.value">
-                  {{ option.label }}
-                </option>
-              </select>
-              <input v-model.number="newCostAmount" class="field-input" type="number" min="0" step="50" placeholder="Valor">
+            <div v-if="addingCost" class="mb-4 rounded-lg bg-slate-50 p-3">
+              <div class="flex gap-2">
+                <select v-model="newCostType" class="field-input flex-1" @change="onCostTypeChange">
+                  <option v-for="option in costTypeOptions" :key="option.value" :value="option.value">
+                    {{ option.label }}
+                  </option>
+                </select>
+                <input v-model.number="newCostAmount" class="field-input w-32" type="number" min="0" step="50" placeholder="Valor">
+                <button
+                  class="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800"
+                  type="button"
+                  @click="addCostItem"
+                >
+                  +
+                </button>
+              </div>
               <input
                 v-if="newCostType === 'outros'"
                 v-model="newCostOtherLabel"
-                class="field-input"
+                class="field-input mt-2"
                 placeholder="Descrição"
               >
-              <button
-                class="w-full rounded-lg bg-slate-900 py-2 text-sm font-semibold text-white hover:bg-slate-800"
-                type="button"
-                @click="addCostItem"
-              >
-                Confirmar
-              </button>
             </div>
 
             <div class="space-y-2">
@@ -511,10 +513,17 @@
             </div>
           </div>
 
-          <div class="rounded-xl border-2 border-emerald-400 bg-emerald-50 p-4">
-            <p class="text-xs font-semibold uppercase tracking-wider text-emerald-700">Valor máximo no leilão</p>
-            <p class="mt-1 text-3xl font-bold text-emerald-800">{{ formatMoney(maxAuctionBid) }}</p>
-            <p class="mt-2 text-xs text-emerald-700">FIPE - Margem - Custos</p>
+          <div class="grid grid-cols-2 gap-3">
+            <div class="rounded-xl border-2 border-emerald-400 bg-emerald-50 p-4">
+              <p class="text-xs font-semibold uppercase tracking-wider text-emerald-700">Valor máximo no leilão</p>
+              <p class="mt-1 text-2xl font-bold text-emerald-800">{{ formatMoney(maxAuctionBid) }}</p>
+              <p class="mt-2 text-xs text-emerald-700">FIPE - Margem - Custos</p>
+            </div>
+            <div class="rounded-xl border-2 border-blue-400 bg-blue-50 p-4">
+              <p class="text-xs font-semibold uppercase tracking-wider text-blue-700">Valor médio de venda</p>
+              <p class="mt-1 text-2xl font-bold text-blue-800">{{ formatMoney(estimatedSaleValue) }}</p>
+              <p class="mt-2 text-xs text-blue-700">FIPE {{ draft.mountClass === 'pequena' ? '-5%' : '-20%' }}</p>
+            </div>
           </div>
         </div>
 
@@ -543,14 +552,17 @@
 
           <div class="rounded-lg bg-slate-50 p-3">
             <p class="text-xs font-semibold uppercase tracking-wider text-slate-500">Resultado projetado</p>
-            <p class="mt-2 text-sm">Lucro estimado: <span class="font-bold">{{ formatMoney(projectedProfit) }}</span></p>
-            <p class="text-sm">
-              Distância da meta:
-              <span class="font-bold" :class="marginGapValue >= 0 ? 'text-emerald-700' : 'text-rose-700'">
-                {{ formatMoney(marginGapValue) }}
-              </span>
-            </p>
-            <p class="text-sm">Margem %: <span class="font-bold">{{ formatPercent(projectedMarginPercent) }}</span></p>
+            <div class="mt-2 space-y-1">
+              <p class="text-sm">Preço de venda estimado: <span class="font-bold text-blue-700">{{ formatMoney(estimatedSaleValue) }}</span></p>
+              <p class="text-sm">Lucro estimado: <span class="font-bold" :class="projectedProfit >= 0 ? 'text-emerald-700' : 'text-rose-700'">{{ formatMoney(projectedProfit) }}</span></p>
+              <p class="text-sm">Margem: <span class="font-bold">{{ formatPercent(projectedMarginPercent) }}</span></p>
+              <p class="text-sm">
+                Distância da meta:
+                <span class="font-bold" :class="marginGapValue >= 0 ? 'text-emerald-700' : 'text-rose-700'">
+                  {{ formatMoney(marginGapValue) }}
+                </span>
+              </p>
+            </div>
           </div>
 
           <div>
@@ -768,15 +780,34 @@ const createEmptyOcrFeedbackProfile = (): OcrFeedbackProfile => ({
   positionCorrections: {},
 })
 
+const getCostValueByFipe = (fipe: number, ranges: [number, number][]): number => {
+  if (fipe <= 50000) return ranges[0][1]
+  if (fipe <= 120000) return ranges[1][1]
+  if (fipe <= 200000) return ranges[2][1]
+  return ranges[2][1]
+}
+
 const costTypeOptions: CostOption[] = [
-  { value: 'leilao', label: 'Leilao', defaultAmount: 800 },
-  { value: 'documentacao', label: 'Documentacao' },
+  { value: 'leilao', label: 'Leilão', defaultAmount: 800 },
+  { value: 'documentacao', label: 'Documentação' },
+  { value: 'frente-motor', label: 'Frente com motor', defaultAmount: 5000 },
+  { value: 'frente-sem-motor', label: 'Frente sem motor', defaultAmount: 2000 },
+  { value: 'traseira-pintura', label: 'Traseira pintura', defaultAmount: 1500 },
+  { value: 'traseira-troca', label: 'Traseira troca', defaultAmount: 3500 },
+  { value: 'lateral-portas', label: 'Lateral + portas', defaultAmount: 5000 },
+  { value: 'guincho', label: 'Guincho', defaultAmount: 200 },
+  { value: 'parabrisas', label: 'Parabrisa' },
+  { value: 'frente-pecas', label: 'Frente peças' },
+  { value: 'farol', label: 'Farol' },
+  { value: 'kit-airbag', label: 'Kit airbag' },
+  { value: 'portas-lateral', label: '2 Portas lateral' },
+  { value: 'traseira-completa', label: 'Traseira completa' },
+  { value: 'jogo-pneus', label: 'Jogo de pneus' },
   { value: 'pintura', label: 'Pintura' },
-  { value: 'mecanica', label: 'Mecanica' },
-  { value: 'suspensao', label: 'Suspensao' },
+  { value: 'mecanica', label: 'Mecânica' },
+  { value: 'suspensao', label: 'Suspensão' },
   { value: 'vidros', label: 'Vidros' },
-  { value: 'portas', label: 'Portas' },
-  { value: 'eletrica', label: 'Eletrica' },
+  { value: 'eletrica', label: 'Elétrica' },
   { value: 'outros', label: 'Outros' },
 ]
 
@@ -893,6 +924,10 @@ watch(triggerStep1, () => {
 
 const totalCosts = computed(() => calculateTotalCosts(draft.costs))
 const suggestedMarginValue = computed(() => suggestMarginByFipe(draft.fipeValue))
+
+const estimatedSaleValue = computed(() => {
+  return calculateSaleValue(Number(draft.fipeValue), draft.mountClass)
+})
 
 const maxAuctionBid = computed(() => {
   const value = Number(draft.fipeValue) - Number(targetMarginValue.value) - Number(totalCosts.value)
@@ -2108,7 +2143,22 @@ const extractPlateFromPhoto = async () => {
 
 const onCostTypeChange = () => {
   const option = costTypeOptions.find((item) => item.value === newCostType.value)
-  if (option?.defaultAmount && newCostAmount.value <= 0) {
+  const fipe = Number(draft.fipeValue) || 0
+  
+  // Custos que variam por faixa de FIPE
+  const fipeDynamicCosts: Record<string, [number, number][]> = {
+    'parabrisas': [[50000, 800], [120000, 1200], [200000, 1700]],
+    'frente-pecas': [[50000, 2500], [120000, 4500], [200000, 6000]],
+    'farol': [[50000, 800], [120000, 2000], [200000, 4500]],
+    'kit-airbag': [[50000, 3500], [120000, 6000], [200000, 9000]],
+    'portas-lateral': [[50000, 1200], [120000, 2800], [200000, 3800]],
+    'traseira-completa': [[50000, 3000], [120000, 5000], [200000, 8000]],
+    'jogo-pneus': [[50000, 2000], [120000, 3000], [200000, 4000]],
+  }
+  
+  if (newCostType.value in fipeDynamicCosts && fipe > 0) {
+    newCostAmount.value = getCostValueByFipe(fipe, fipeDynamicCosts[newCostType.value])
+  } else if (option?.defaultAmount && newCostAmount.value <= 0) {
     newCostAmount.value = option.defaultAmount
   }
 }
