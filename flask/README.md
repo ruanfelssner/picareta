@@ -52,6 +52,7 @@ Via variáveis de ambiente:
 Parametros de tuning de OCR/Gunicorn ficam fixos no codigo com perfil padrao de producao (nao dependem de env):
 
 - OCR: `MAX_PROCESS_SIDE=1280`, `OCR_MAX_PROCESS_MS=30000`, `OCR_MAX_VARIANTS=3`, `OCR_MAX_FALLBACK_REGIONS=3`, `OCR_NO_YOLO_MAX_FALLBACK_REGIONS=3`, `OCR_MIN_TEXT_CONFIDENCE=0.14`, `OCR_PRELOAD_MODELS=true`.
+- Etapa intermediaria: tentativa por contornos de placa (`contour_plate_regions`) antes do fallback amplo.
 - Rescue (sem YOLO e sem candidato): `OCR_RESCUE_MAX_VARIANTS=4`, `OCR_RESCUE_MIN_TEXT_CONFIDENCE=0.08`.
 - Priorizacao adicional: empate em `...7` vs `...0` no ultimo digito e empate em letra/digito no 5o caractere (ex.: `KRS2102` vs `KRS2I02`).
 - YOLO: `imgsz=640`, `max_det=3`.

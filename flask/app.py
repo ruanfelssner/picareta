@@ -127,6 +127,12 @@ def _source_score_boost(source: str) -> float:
         "bottom_third": 0.05,
         "bottom_half": 0.03,
         "center_mid": 0.01,
+        "contour_plate_0": 0.10,
+        "contour_plate_1": 0.09,
+        "contour_plate_2": 0.08,
+        "contour_plate_3": 0.07,
+        "contour_plate_4": 0.06,
+        "contour_plate_5": 0.05,
         "middle_band": -0.02,
         "full": -0.05,
         "rescue_bottom_half": 0.02,
@@ -668,6 +674,83 @@ def _fallback_regions(np_img_rgb: np.ndarray) -> List[Tuple[str, np.ndarray, Tup
     return regions
 
 
+def _plate_contour_regions(np_img_rgb: np.ndarray) -> List[Tuple[str, np.ndarray, Tuple[int, int]]]:
+    if cv2 is None:
+        return []
+
+    h, w = np_img_rgb.shape[:2]
+    if h <= 0 or w <= 0:
+        return []
+
+    gray = cv2.cvtColor(np_img_rgb, cv2.COLOR_RGB2GRAY)
+    gray = cv2.bilateralFilter(gray, 11, 75, 75)
+    edges = cv2.Canny(gray, 70, 180)
+    edges = cv2.dilate(edges, np.ones((3, 3), np.uint8), iterations=1)
+
+    found = cv2.findContours(edges, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+    contours = found[0] if len(found) == 2 else found[1]
+    if not contours:
+        return []
+
+    contours = sorted(contours, key=cv2.contourArea, reverse=True)
+    regions: List[Tuple[str, np.ndarray, Tuple[int, int]]] = []
+    seen_boxes: List[Tuple[int, int, int, int]] = []
+
+    def overlaps(box_a: Tuple[int, int, int, int], box_b: Tuple[int, int, int, int]) -> bool:
+        ax1, ay1, ax2, ay2 = box_a
+        bx1, by1, bx2, by2 = box_b
+        inter_x1 = max(ax1, bx1)
+        inter_y1 = max(ay1, by1)
+        inter_x2 = min(ax2, bx2)
+        inter_y2 = min(ay2, by2)
+        if inter_x2 <= inter_x1 or inter_y2 <= inter_y1:
+            return False
+        inter = (inter_x2 - inter_x1) * (inter_y2 - inter_y1)
+        area_a = max(1, (ax2 - ax1) * (ay2 - ay1))
+        area_b = max(1, (bx2 - bx1) * (by2 - by1))
+        iou = inter / float(area_a + area_b - inter)
+        return iou >= 0.45
+
+    for contour in contours[:120]:
+        x, y, bw, bh = cv2.boundingRect(contour)
+        if bw <= 0 or bh <= 0:
+            continue
+
+        aspect = bw / float(bh)
+        area_ratio = (bw * bh) / float(w * h)
+        center_y_ratio = (y + (bh / 2.0)) / float(h)
+        if aspect < 2.0 or aspect > 8.8:
+            continue
+        if area_ratio < 0.0025 or area_ratio > 0.22:
+            continue
+        if center_y_ratio < 0.40:
+            continue
+
+        pad_x = int(round(bw * 0.12))
+        pad_y = int(round(bh * 0.20))
+        x1 = max(0, x - pad_x)
+        y1 = max(0, y - pad_y)
+        x2 = min(w, x + bw + pad_x)
+        y2 = min(h, y + bh + pad_y)
+        if x2 <= x1 or y2 <= y1:
+            continue
+
+        box = (x1, y1, x2, y2)
+        if any(overlaps(box, prev) for prev in seen_boxes):
+            continue
+
+        crop = np_img_rgb[y1:y2, x1:x2]
+        if crop.size == 0:
+            continue
+
+        seen_boxes.append(box)
+        regions.append((f"contour_plate_{len(regions)}", crop, (x1, y1)))
+        if len(regions) >= 6:
+            break
+
+    return regions
+
+
 def _dedupe_candidates(candidates: List[Dict], width: int, height: int) -> List[Dict]:
     by_plate: Dict[str, Dict] = {}
     for item in candidates:
@@ -937,6 +1020,28 @@ def recognize_plate(img: Image.Image) -> dict:
             timings["yolo_ms"] = int(round((perf_counter() - yolo_started) * 1000))
     else:
         pipeline.append("yolo_unavailable")
+
+    if not candidates and not _is_deadline_reached(deadline_at):
+        contour_started = perf_counter()
+        contour_regions = _plate_contour_regions(np_img_rgb)
+        if contour_regions:
+            pipeline.append("contour_plate_regions")
+            for region_name, region_img, offset in contour_regions:
+                if _is_deadline_reached(deadline_at):
+                    timeout_reached = True
+                    pipeline.append("deadline_reached:contour_regions")
+                    break
+                contour_candidates = _ocr_scan(
+                    region_img,
+                    source=region_name,
+                    offset=offset,
+                    deadline_at=deadline_at,
+                )
+                candidates.extend(contour_candidates)
+                if _has_strong_candidate(contour_candidates):
+                    pipeline.append(f"contour_short_circuit:{region_name}")
+                    break
+        timings["contour_ms"] = int(round((perf_counter() - contour_started) * 1000))
 
     if not candidates and not _is_deadline_reached(deadline_at):
         fallback_started = perf_counter()

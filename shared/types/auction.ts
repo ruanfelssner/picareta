@@ -14,6 +14,8 @@ export interface AuctionSummary {
   targetReached: boolean
 }
 
+export type MountClass = 'pequena' | 'media'
+
 export interface AuctionCarRecord {
   id: string
   plate: string
@@ -25,6 +27,7 @@ export interface AuctionCarRecord {
   purchaseValue: number
   costs: CostItem[]
   targetMarginPercent: number
+  mountClass: MountClass
   notes: string
   createdAt: string
   updatedAt: string

@@ -22,6 +22,7 @@ const payloadSchema = z.object({
   purchaseValue: z.coerce.number().min(0).default(0),
   costs: z.array(costSchema).default([]),
   targetMarginPercent: z.coerce.number().min(0).default(0),
+  mountClass: z.enum(['pequena', 'media']).default('pequena'),
   notes: z.string().default(''),
   createdAt: z.string().datetime().optional(),
 })
@@ -59,6 +60,7 @@ export default defineEventHandler(async (event) => {
     purchaseValue: Number(value.purchaseValue) || 0,
     costs,
     targetMarginPercent: Number(value.targetMarginPercent) || 0,
+    mountClass: value.mountClass,
     notes: value.notes.trim(),
     createdAt: value.createdAt || now,
     updatedAt: now,
@@ -67,6 +69,7 @@ export default defineEventHandler(async (event) => {
       purchaseValue: value.purchaseValue,
       costs,
       targetMarginPercent: value.targetMarginPercent,
+      mountClass: value.mountClass,
     }),
   }
 

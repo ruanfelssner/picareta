@@ -389,6 +389,30 @@
           </div>
 
           <div class="rounded-xl border border-slate-200 bg-white p-4">
+            <p class="text-xs font-semibold uppercase tracking-wider text-slate-500">Tipo de Monta</p>
+            <div class="mt-3 flex gap-3">
+              <button
+                class="flex-1 rounded-lg border-2 px-4 py-3 text-sm font-bold transition-colors"
+                :class="draft.mountClass === 'pequena' ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'"
+                type="button"
+                @click="draft.mountClass = 'pequena'"
+              >
+                Pequena Monta
+                <span class="block text-xs font-normal opacity-80">Venda 5% abaixo FIPE</span>
+              </button>
+              <button
+                class="flex-1 rounded-lg border-2 px-4 py-3 text-sm font-bold transition-colors"
+                :class="draft.mountClass === 'media' ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'"
+                type="button"
+                @click="draft.mountClass = 'media'"
+              >
+                Média Monta
+                <span class="block text-xs font-normal opacity-80">Venda 20% abaixo FIPE</span>
+              </button>
+            </div>
+          </div>
+
+          <div class="rounded-xl border border-slate-200 bg-white p-4">
             <div class="mb-3 flex items-center justify-between">
               <h3 class="text-sm font-bold text-slate-900">Custos</h3>
               <button
@@ -623,6 +647,9 @@
                 <div class="mt-2 flex flex-wrap gap-3 text-xs">
                   <span class="text-slate-600">Compra: <span class="font-semibold">{{ formatMoney(item.purchaseValue) }}</span></span>
                   <span class="text-slate-600">FIPE: <span class="font-semibold">{{ formatMoney(item.fipeValue) }}</span></span>
+                  <span v-if="item.mountClass" class="rounded-full px-2 py-0.5 text-xs font-semibold" :class="item.mountClass === 'pequena' ? 'bg-blue-100 text-blue-700' : 'bg-purple-100 text-purple-700'">
+                    {{ item.mountClass === 'pequena' ? 'Pequena Monta (-5%)' : 'Média Monta (-20%)' }}
+                  </span>
                 </div>
                 <div class="mt-2">
                   <p class="text-xs font-semibold uppercase tracking-wider text-slate-500">Lucro projetado</p>
@@ -662,7 +689,7 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useAuctionCarsApi } from '~/composables/useAuctionCarsApi'
 import { useIndexedAuctionCars } from '~/composables/useIndexedAuctionCars'
-import { calculateAuctionSummary, calculateTotalCosts, normalizePlate } from '@core/shared/valuation'
+import { calculateAuctionSummary, calculateSaleValue, calculateTotalCosts, normalizePlate } from '@core/shared/valuation'
 import type { AuctionCarRecord, CostItem, PlateFipeQuotaInfo } from '@core/shared/types/auction'
 
 type QueueProcessingStage = 'ocr' | 'fipe' | 'done' | 'error'
@@ -705,6 +732,7 @@ type DraftState = {
   purchaseValue: number
   costs: CostItem[]
   targetMarginPercent: number
+  mountClass: 'pequena' | 'media'
   notes: string
   createdAt: string | null
 }
@@ -776,6 +804,7 @@ const createEmptyDraft = (): DraftState => ({
   purchaseValue: 0,
   costs: getDefaultCosts(),
   targetMarginPercent: 0,
+  mountClass: 'pequena',
   notes: '',
   createdAt: null,
 })
@@ -878,11 +907,13 @@ const chosenBidValue = computed(() => {
 const bidUsedInProjection = computed(() => (chosenBidValue.value > 0 ? chosenBidValue.value : maxAuctionBid.value))
 
 const projectedProfit = computed(() => {
-  return Number(draft.fipeValue) - (bidUsedInProjection.value + Number(totalCosts.value))
+  const saleValue = calculateSaleValue(Number(draft.fipeValue), draft.mountClass)
+  return saleValue - (bidUsedInProjection.value + Number(totalCosts.value))
 })
 
 const projectedMarginPercent = computed(() => {
-  return draft.fipeValue > 0 ? (projectedProfit.value / draft.fipeValue) * 100 : 0
+  const saleValue = calculateSaleValue(Number(draft.fipeValue), draft.mountClass)
+  return saleValue > 0 ? (projectedProfit.value / saleValue) * 100 : 0
 })
 
 const marginGapValue = computed(() => projectedProfit.value - Number(targetMarginValue.value || 0))
@@ -2182,6 +2213,7 @@ const buildRecord = (): AuctionCarRecord => {
     purchaseValue,
     costs,
     targetMarginPercent,
+    mountClass: draft.mountClass,
     notes: draft.notes.trim(),
     createdAt,
     updatedAt: now,
@@ -2190,6 +2222,7 @@ const buildRecord = (): AuctionCarRecord => {
       purchaseValue,
       costs,
       targetMarginPercent,
+      mountClass: draft.mountClass,
     }),
   }
 }
@@ -2243,6 +2276,7 @@ const loadFromLocal = (record: AuctionCarRecord) => {
     purchaseValue: record.purchaseValue,
     costs: record.costs,
     targetMarginPercent: record.targetMarginPercent,
+    mountClass: record.mountClass || 'pequena',
     notes: record.notes,
     createdAt: record.createdAt,
   })
