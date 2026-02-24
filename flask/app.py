@@ -54,6 +54,10 @@ OCR_YOLO_IMGSZ = 640
 OCR_YOLO_MAX_DET = 3
 OCR_RESCUE_MAX_VARIANTS = 4
 OCR_RESCUE_MIN_TEXT_CONFIDENCE = 0.08
+OCR_SUPPORT_HIT_BOOST = 0.02
+OCR_SUPPORT_SOURCE_BOOST = 0.02
+OCR_SUPPORT_HIT_BOOST_MAX = 0.08
+OCR_SUPPORT_SOURCE_BOOST_MAX = 0.04
 PLATE_REGEX = re.compile(r"^[A-Z]{3}[0-9][A-Z0-9][0-9]{2}$")
 TEMPLATE_OLD = "LLLDDDD"
 TEMPLATE_MERCOSUL = "LLLDLDD"
@@ -95,6 +99,36 @@ _yolo_model_path = None
 
 def _is_deadline_reached(deadline_at: Optional[float]) -> bool:
     return deadline_at is not None and perf_counter() >= deadline_at
+
+
+def _source_score_boost(source: str) -> float:
+    if source.startswith("yolo"):
+        return 0.10
+    boosts = {
+        "center_bottom": 0.06,
+        "bottom_third": 0.05,
+        "bottom_half": 0.03,
+        "center_mid": 0.01,
+        "middle_band": -0.02,
+        "full": -0.05,
+        "rescue_bottom_half": 0.02,
+        "rescue_full": -0.04,
+    }
+    return boosts.get(source, 0.0)
+
+
+def _bbox_score_adjustment(bbox: Optional[List[int]]) -> float:
+    if not bbox:
+        return 0.0
+    x1, y1, x2, y2 = bbox
+    w = max(1, x2 - x1)
+    h = max(1, y2 - y1)
+    ratio = w / float(h)
+    if 2.2 <= ratio <= 7.5:
+        return 0.02
+    if ratio < 1.4 or ratio > 10.0:
+        return -0.03
+    return 0.0
 
 
 def list_test_images():
@@ -453,6 +487,7 @@ def _ocr_scan(
         variants = variants[:variant_limit]
 
     min_conf = OCR_MIN_TEXT_CONFIDENCE if min_text_confidence is None else float(min_text_confidence)
+    source_boost = _source_score_boost(source)
 
     for variant_index, (variant, variant_boost) in enumerate(variants):
         if _is_deadline_reached(deadline_at):
@@ -480,13 +515,13 @@ def _ocr_scan(
                 plate = match["plate"]
                 penalty = int(match["penalty"])
                 score = float(conf)
-                if source.startswith("yolo"):
-                    score += 0.10
+                score += source_boost
                 if source_confidence is not None:
                     score += float(source_confidence) * 0.10
                 score += float(variant_boost)
                 if variant_index >= 2:
                     score += 0.01
+                score += _bbox_score_adjustment(bbox)
                 # Penaliza candidatos que exigiram muitas correções de OCR (ex.: O<->0).
                 score -= penalty * 0.03
                 detections.append({
@@ -518,7 +553,7 @@ def _fallback_regions(np_img_rgb: np.ndarray) -> List[Tuple[str, np.ndarray, Tup
 
 
 def _dedupe_candidates(candidates: List[Dict], width: int, height: int) -> List[Dict]:
-    by_plate = {}
+    by_plate: Dict[str, Dict] = {}
     for item in candidates:
         plate = item.get("plate")
         if not plate:
@@ -526,17 +561,41 @@ def _dedupe_candidates(candidates: List[Dict], width: int, height: int) -> List[
         bbox = item.get("bbox")
         if bbox:
             item["bbox"] = _clip_bbox(bbox, width, height)
-        prev = by_plate.get(plate)
-        item_key = (item["confidence"], -item.get("normalization_penalty", 99))
-        prev_key = (
-            prev["confidence"],
-            -prev.get("normalization_penalty", 99),
-        ) if prev else None
-        if prev is None or item_key > prev_key:
-            by_plate[plate] = item
+        current = by_plate.get(plate)
+        if current is None:
+            by_plate[plate] = {
+                "best": item,
+                "hits": 1,
+                "sources": {str(item.get("source") or "")},
+            }
+            continue
 
-    deduped = sorted(
-        by_plate.values(),
+        current["hits"] += 1
+        current["sources"].add(str(item.get("source") or ""))
+        best_item = current["best"]
+        item_key = (item["confidence"], -item.get("normalization_penalty", 99))
+        best_key = (best_item["confidence"], -best_item.get("normalization_penalty", 99))
+        if item_key > best_key:
+            current["best"] = item
+
+    deduped: List[Dict] = []
+    for info in by_plate.values():
+        best_item = dict(info["best"])
+        hits = int(info["hits"])
+        source_count = len(info["sources"])
+        hit_boost = min(OCR_SUPPORT_HIT_BOOST_MAX, max(0, hits - 1) * OCR_SUPPORT_HIT_BOOST)
+        source_boost = min(
+            OCR_SUPPORT_SOURCE_BOOST_MAX,
+            max(0, source_count - 1) * OCR_SUPPORT_SOURCE_BOOST,
+        )
+        support_boost = hit_boost + source_boost
+        best_item["support_hits"] = hits
+        best_item["support_sources"] = source_count
+        best_item["support_boost"] = round(support_boost, 4)
+        best_item["confidence"] = min(1.0, round(float(best_item["confidence"]) + support_boost, 4))
+        deduped.append(best_item)
+
+    deduped.sort(
         key=lambda x: (x["confidence"], -x.get("normalization_penalty", 99)),
         reverse=True,
     )
