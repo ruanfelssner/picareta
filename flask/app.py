@@ -323,7 +323,7 @@ def _expand_letter_ambiguities(plate: str, pattern: str, base_penalty: int) -> L
 
     # Limita combinacoes para evitar explosao de candidatos.
     max_changes = 3
-    max_generated = 24
+    max_generated = 120
     options = []
     for index in letter_positions:
         alternatives = tuple(ch for ch in LETTER_AMBIGUITY.get(plate[index], ()) if ch != plate[index])
@@ -344,7 +344,14 @@ def _expand_letter_ambiguities(plate: str, pattern: str, base_penalty: int) -> L
             alt_plate = "".join(chars)
             if not PLATE_REGEX.match(alt_plate):
                 return
-            candidate_penalty = base_penalty + len(changed_positions)
+            change_count = len(changed_positions)
+            prefix_only = all(index <= 2 for index in changed_positions)
+            if prefix_only:
+                # Erros no prefixo (3 letras iniciais) sao comuns em perspectiva,
+                # entao reduzimos um pouco a penalidade para nao enterrar o candidato.
+                candidate_penalty = base_penalty + ((change_count + 1) // 2)
+            else:
+                candidate_penalty = base_penalty + change_count
             prev = generated.get(alt_plate)
             if prev is None or candidate_penalty < prev["penalty"]:
                 generated[alt_plate] = {
