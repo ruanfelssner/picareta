@@ -63,6 +63,11 @@ OCR_MAX_PROCESS_MS = 30_000
 OCR_MAX_VARIANTS = 3
 OCR_NO_YOLO_MAX_FALLBACK_REGIONS = 3
 OCR_MIN_TEXT_CONFIDENCE = 0.14
+OCR_CONTOUR_MAX_MS = 1700
+OCR_CONTOUR_MAX_REGIONS = 3
+OCR_CONTOUR_SCAN_MAX = 120
+OCR_CONTOUR_OCR_MAX_VARIANTS = 2
+OCR_CONTOUR_ROI_START_RATIO = 0.20
 OCR_YOLO_IMGSZ = 640
 OCR_YOLO_MAX_DET = 3
 OCR_RESCUE_MAX_VARIANTS = 4
@@ -90,25 +95,25 @@ OCR_AGGRESSIVE_CORRECTION = True
 OCR_AGGRESSIVE_EXTRA_PENALTY = 2.6
 OCR_PATTERN_MERCOSUL_BOOST = 0.018
 OCR_PATTERN_OLD_PENALTY = 0.012
-OCR_LOW_CERTAINTY_SINGLE_HIT_CONFIDENCE = 0.86
-OCR_LOW_CERTAINTY_YOLO_SINGLE_HIT_CONFIDENCE = 0.94
+OCR_LOW_CERTAINTY_SINGLE_HIT_CONFIDENCE = 0.84
+OCR_LOW_CERTAINTY_YOLO_SINGLE_HIT_CONFIDENCE = 0.90
 OCR_LOW_CERTAINTY_BEAM_CONFIDENCE = 0.85
 OCR_LOW_CERTAINTY_AGGRESSIVE_CONFIDENCE = 0.90
 OCR_LOW_CERTAINTY_SMALL_GAP = 0.045
-OCR_YOLO_TEXTBOX_MIN_WIDTH_RATIO = 0.42
-OCR_YOLO_TEXTBOX_MIN_HEIGHT_RATIO = 0.18
-OCR_YOLO_TEXTBOX_MAX_HEIGHT_RATIO = 0.86
-OCR_YOLO_TEXTBOX_MIN_AREA_RATIO = 0.08
-OCR_TEXTBOX_MIN_ASPECT = 1.7
+OCR_YOLO_TEXTBOX_MIN_WIDTH_RATIO = 0.24
+OCR_YOLO_TEXTBOX_MIN_HEIGHT_RATIO = 0.08
+OCR_YOLO_TEXTBOX_MAX_HEIGHT_RATIO = 0.92
+OCR_YOLO_TEXTBOX_MIN_AREA_RATIO = 0.02
+OCR_TEXTBOX_MIN_ASPECT = 1.2
 OCR_TEXTBOX_MAX_ASPECT = 10.8
-OCR_YOLO_BOX_MIN_ASPECT = 1.9
-OCR_YOLO_BOX_MAX_ASPECT = 9.4
-OCR_YOLO_BOX_MIN_AREA_RATIO = 0.0015
-OCR_YOLO_BOX_MAX_AREA_RATIO = 0.12
-OCR_YOLO_BOX_MIN_CENTER_Y = 0.26
+OCR_YOLO_BOX_MIN_ASPECT = 1.35
+OCR_YOLO_BOX_MAX_ASPECT = 11.0
+OCR_YOLO_BOX_MIN_AREA_RATIO = 0.0009
+OCR_YOLO_BOX_MAX_AREA_RATIO = 0.20
+OCR_YOLO_BOX_MIN_CENTER_Y = 0.12
 OCR_YOLO_BOX_MAX_CENTER_Y = 0.96
-OCR_YOLO_BOX_CENTER_X_MARGIN = 0.48
-OCR_YOLO_OCR_TOKEN_MAX_LEN = 8
+OCR_YOLO_BOX_CENTER_X_MARGIN = 0.50
+OCR_YOLO_OCR_TOKEN_MAX_LEN = 12
 PLATE_REGEX = re.compile(r"^[A-Z]{3}[0-9][A-Z0-9][0-9]{2}$")
 TEMPLATE_OLD = "LLLDDDD"
 TEMPLATE_MERCOSUL = "LLLDLDD"
@@ -1326,7 +1331,10 @@ def _fallback_regions(np_img_rgb: np.ndarray) -> List[Tuple[str, np.ndarray, Tup
     return regions
 
 
-def _plate_contour_regions(np_img_rgb: np.ndarray) -> List[Tuple[str, np.ndarray, Tuple[int, int]]]:
+def _plate_contour_regions(
+    np_img_rgb: np.ndarray,
+    max_ms: int = OCR_CONTOUR_MAX_MS,
+) -> List[Tuple[str, np.ndarray, Tuple[int, int]]]:
     if cv2 is None:
         return []
 
@@ -1334,17 +1342,49 @@ def _plate_contour_regions(np_img_rgb: np.ndarray) -> List[Tuple[str, np.ndarray
     if h <= 0 or w <= 0:
         return []
 
-    gray = cv2.cvtColor(np_img_rgb, cv2.COLOR_RGB2GRAY)
-    gray = cv2.bilateralFilter(gray, 11, 75, 75)
+    started = perf_counter()
+    budget_s = (max(0, int(max_ms)) / 1000.0) if max_ms > 0 else 0.0
+
+    def timed_out() -> bool:
+        return budget_s > 0 and (perf_counter() - started) >= budget_s
+
+    roi_start_y = int(round(h * OCR_CONTOUR_ROI_START_RATIO))
+    roi_start_y = max(0, min(h - 1, roi_start_y))
+    roi = np_img_rgb[roi_start_y:h, 0:w]
+    if roi.size == 0:
+        roi = np_img_rgb
+        roi_start_y = 0
+
+    gray = cv2.cvtColor(roi, cv2.COLOR_RGB2GRAY)
+    # Gaussian blur e mais leve que bilateral para esse passo de proposal.
+    gray = cv2.GaussianBlur(gray, (5, 5), 0)
     edges = cv2.Canny(gray, 70, 180)
     edges = cv2.dilate(edges, np.ones((3, 3), np.uint8), iterations=1)
+    if timed_out():
+        return []
 
-    found = cv2.findContours(edges, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+    found = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     contours = found[0] if len(found) == 2 else found[1]
     if not contours:
+        if roi_start_y > 0 and not timed_out():
+            gray_full = cv2.cvtColor(np_img_rgb, cv2.COLOR_RGB2GRAY)
+            gray_full = cv2.GaussianBlur(gray_full, (5, 5), 0)
+            edges_full = cv2.Canny(gray_full, 70, 180)
+            edges_full = cv2.dilate(edges_full, np.ones((3, 3), np.uint8), iterations=1)
+            found_full = cv2.findContours(edges_full, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            contours = found_full[0] if len(found_full) == 2 else found_full[1]
+            roi_start_y = 0
+            if not contours:
+                return []
+        else:
+            return []
+
+    if timed_out():
         return []
 
     contours = sorted(contours, key=cv2.contourArea, reverse=True)
+    if OCR_CONTOUR_SCAN_MAX > 0:
+        contours = contours[:OCR_CONTOUR_SCAN_MAX]
     regions: List[Tuple[str, np.ndarray, Tuple[int, int]]] = []
     seen_boxes: List[Tuple[int, int, int, int]] = []
 
@@ -1363,8 +1403,11 @@ def _plate_contour_regions(np_img_rgb: np.ndarray) -> List[Tuple[str, np.ndarray
         iou = inter / float(area_a + area_b - inter)
         return iou >= 0.45
 
-    for contour in contours[:120]:
+    for contour in contours:
+        if timed_out():
+            break
         x, y, bw, bh = cv2.boundingRect(contour)
+        y += roi_start_y
         if bw <= 0 or bh <= 0:
             continue
 
@@ -1375,7 +1418,7 @@ def _plate_contour_regions(np_img_rgb: np.ndarray) -> List[Tuple[str, np.ndarray
             continue
         if area_ratio < 0.0025 or area_ratio > 0.22:
             continue
-        if center_y_ratio < 0.40:
+        if center_y_ratio < 0.36:
             continue
 
         pad_x = int(round(bw * 0.12))
@@ -1397,7 +1440,7 @@ def _plate_contour_regions(np_img_rgb: np.ndarray) -> List[Tuple[str, np.ndarray
 
         seen_boxes.append(box)
         regions.append((f"contour_plate_{len(regions)}", crop, (x1, y1)))
-        if len(regions) >= 3:
+        if len(regions) >= OCR_CONTOUR_MAX_REGIONS:
             break
 
     return regions
@@ -1863,7 +1906,7 @@ def recognize_plate(img: Image.Image, progress_cb=None) -> dict:
 
     if not candidates and not _is_deadline_reached(deadline_at):
         contour_started = perf_counter()
-        contour_regions = _plate_contour_regions(np_img_rgb)
+        contour_regions = _plate_contour_regions(np_img_rgb, max_ms=OCR_CONTOUR_MAX_MS)
         if contour_regions:
             pipeline.append("contour_plate_regions")
             for region_name, region_img, offset in contour_regions:
@@ -1871,12 +1914,15 @@ def recognize_plate(img: Image.Image, progress_cb=None) -> dict:
                     timeout_reached = True
                     pipeline.append("deadline_reached:contour_regions")
                     break
+                if OCR_CONTOUR_MAX_MS > 0 and ((perf_counter() - contour_started) * 1000.0) >= OCR_CONTOUR_MAX_MS:
+                    pipeline.append("contour_budget_reached")
+                    break
                 contour_candidates = _ocr_scan(
                     region_img,
                     source=region_name,
                     offset=offset,
                     deadline_at=deadline_at,
-                    max_variants=2,
+                    max_variants=OCR_CONTOUR_OCR_MAX_VARIANTS,
                     min_text_confidence=0.10,
                 )
                 candidates.extend(contour_candidates)

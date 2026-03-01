@@ -538,7 +538,7 @@
             </span>
           </div>
 
-          <div class="space-y-3 p-4">
+          <div class="space-y-3">
             <div>
               <p class="text-base font-bold text-slate-900">{{ item.plate || 'SEM PLACA' }}</p>
               <p class="truncate text-sm text-slate-600">{{ item.brand }} {{ item.model }} {{ item.year || '' }}</p>
