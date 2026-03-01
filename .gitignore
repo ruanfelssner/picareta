@@ -27,6 +27,7 @@ data
 *.traineddata
 
 # Python cache
+flask/__pycache__
 __pycache__/
 *.py[cod]
 
