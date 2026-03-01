@@ -117,6 +117,7 @@ OCR_PLATE_ALLOWLIST = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 OCR_BEAMSEARCH_WIDTH = 5
 OCR_BEAMSEARCH_MAX_VARIANTS = 2
 OCR_BEAMSEARCH_MAX_PIXELS = 900_000
+OCR_NO_YOLO_BEAMSEARCH_MAX_PIXELS = 420_000
 OCR_AGGRESSIVE_CORRECTION = True
 OCR_AGGRESSIVE_EXTRA_PENALTY = 2.6
 OCR_PATTERN_MERCOSUL_BOOST = 0.018
@@ -252,6 +253,7 @@ _ocr_error = None
 _yolo_model = None
 _yolo_error = None
 _yolo_model_path = None
+_yolo_last_attempt_at = 0.0
 _char_templates = None
 _char_templates_error = None
 _char_templates_meta = {}
@@ -283,6 +285,7 @@ def _source_score_boost(source: str) -> float:
         "bottom_third": 0.05,
         "bottom_half": 0.03,
         "center_mid": 0.01,
+        "noyolo_plate_focus": 0.06,
         "noyolo_top_center": 0.04,
         "noyolo_mid_center": 0.03,
         "noyolo_lower_band": 0.04,
@@ -1332,6 +1335,10 @@ def _resolve_yolo_model_path() -> Optional[str]:
     candidates.extend([
         os.path.join(BASE_DIR, "models", "license_plate.pt"),
         os.path.join(BASE_DIR, "models", "license_plate_detector.pt"),
+        os.path.join(BASE_DIR, "models", "plate.pt"),
+        os.path.join(BASE_DIR, "license_plate.pt"),
+        os.path.join(os.getcwd(), "models", "license_plate.pt"),
+        os.path.join(os.getcwd(), "flask", "models", "license_plate.pt"),
         os.path.join(BASE_DIR, "..", "models", "license_plate.pt"),
         os.path.join(BASE_DIR, "..", "models", "license_plate_detector.pt"),
     ])
@@ -1343,17 +1350,21 @@ def _resolve_yolo_model_path() -> Optional[str]:
 
 
 def get_yolo_model():
-    global _yolo_model, _yolo_error, _yolo_model_path
+    global _yolo_model, _yolo_error, _yolo_model_path, _yolo_last_attempt_at
     if _yolo_model is not None:
         return _yolo_model, _yolo_model_path, None
-    if _yolo_error is not None:
-        return None, _yolo_model_path, _yolo_error
     if YOLO is None:
         if _ultralytics_import_error:
             _yolo_error = f"ultralytics indisponivel: {_ultralytics_import_error}"
         else:
             _yolo_error = "ultralytics não instalado"
         return None, None, _yolo_error
+
+    # Não trava em erro antigo: se o arquivo aparecer depois do start do processo,
+    # tenta carregar novamente.
+    now = perf_counter()
+    if _yolo_error is not None and (now - _yolo_last_attempt_at) < 1.0:
+        return None, _yolo_model_path, _yolo_error
 
     model_path = _resolve_yolo_model_path()
     _yolo_model_path = model_path
@@ -1362,13 +1373,17 @@ def get_yolo_model():
             "modelo YOLO de placa não encontrado. "
             "Defina PLATE_MODEL_PATH com caminho para .pt"
         )
+        _yolo_last_attempt_at = now
         return None, None, _yolo_error
 
     try:
         _yolo_model = YOLO(model_path)
+        _yolo_error = None
+        _yolo_last_attempt_at = now
         return _yolo_model, model_path, None
     except Exception as err:
         _yolo_error = str(err)
+        _yolo_last_attempt_at = now
         return None, model_path, _yolo_error
 
 
@@ -1448,10 +1463,19 @@ def _ocr_scan(
         if _is_deadline_reached(deadline_at):
             break
 
+        beam_pixels_limit = OCR_BEAMSEARCH_MAX_PIXELS
+        if (
+            source.startswith("noyolo_")
+            or source.startswith("last_")
+            or source.startswith("rescue_")
+            or source in {"center_bottom", "bottom_half", "bottom_third", "middle_band", "full"}
+        ):
+            beam_pixels_limit = OCR_NO_YOLO_BEAMSEARCH_MAX_PIXELS
+
         scan_modes = [("greedy", 1, 0.0)]
         if (
             variant_index < OCR_BEAMSEARCH_MAX_VARIANTS
-            and (source.startswith("yolo") or pixels <= OCR_BEAMSEARCH_MAX_PIXELS)
+            and (source.startswith("yolo") or pixels <= beam_pixels_limit)
         ):
             scan_modes.append(("beamsearch", OCR_BEAMSEARCH_WIDTH, 0.012))
 
@@ -1545,9 +1569,14 @@ def _fallback_regions_no_yolo(np_img_rgb: np.ndarray) -> List[Tuple[str, np.ndar
     top_two_thirds = (h * 2) // 3
     lower_band_y1 = int(round(h * 0.45))
     lower_band_y2 = int(round(h * 0.82))
+    focus_y1 = int(round(h * 0.50))
+    focus_y2 = int(round(h * 0.76))
+    focus_x1 = int(round(w * 0.18))
+    focus_x2 = int(round(w * 0.82))
 
     # Sem detector de placa, prioriza recortes menores no topo/centro para
     # manter detalhe de caracteres e reduzir custo do OCR.
+    regions.append(("noyolo_plate_focus", np_img_rgb[focus_y1:focus_y2, focus_x1:focus_x2], (focus_x1, focus_y1)))
     regions.append(("noyolo_mid_center", np_img_rgb[h // 4:top_two_thirds, center_x1:center_x2], (center_x1, h // 4)))
     regions.append(("center_bottom", np_img_rgb[h // 2:h, center_x1:center_x2], (center_x1, h // 2)))
     regions.append(("noyolo_lower_band", np_img_rgb[lower_band_y1:lower_band_y2, 0:w], (0, lower_band_y1)))
@@ -2534,9 +2563,12 @@ def recognize_plate(img: Image.Image, progress_cb=None) -> dict:
             regions = regions[:OCR_NO_YOLO_MAX_FALLBACK_REGIONS]
 
         for region_name, region_img, offset in regions:
-            if _is_deadline_reached(fallback_deadline):
+            if _is_deadline_reached(deadline_at):
                 timeout_reached = True
                 pipeline.append("deadline_reached:fallback_regions")
+                break
+            if fallback_stage_deadline is not None and _is_deadline_reached(fallback_stage_deadline):
+                pipeline.append("fallback_budget_reached_no_yolo")
                 break
             if (
                 yolo_model is None
@@ -2576,9 +2608,12 @@ def recognize_plate(img: Image.Image, progress_cb=None) -> dict:
                 ("last_top_half_center", np_img_rgb[0:proc_height // 2, c_x1:c_x2], (c_x1, 0)),
             ]
             for region_name, region_img, offset in last_regions:
-                if _is_deadline_reached(last_deadline):
+                if _is_deadline_reached(deadline_at):
                     timeout_reached = True
                     pipeline.append("deadline_reached:last_chance_regions")
+                    break
+                if last_stage_deadline is not None and _is_deadline_reached(last_stage_deadline):
+                    pipeline.append("last_chance_budget_reached_no_yolo")
                     break
                 if (
                     OCR_NO_YOLO_LAST_CHANCE_MAX_MS > 0
