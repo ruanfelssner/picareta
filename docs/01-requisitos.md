@@ -114,6 +114,11 @@ O projeto Picareta precisa permitir avaliacao rapida de carros de leilao no celu
 - RB-07: custo padrao `Leilao` deve ser automatico apenas quando tipo de monta for diferente de `sem_monta`.
 - RB-08: novo registro deve iniciar com status `em_andamento`.
 - RB-09: custo automatico `Tipo monta` deve permanecer sincronizado com o tipo de monta selecionado e com a faixa FIPE vigente.
+- RB-10: OCR deve priorizar placas no formato Mercosul `AAA0A00` (padrao principal), mantendo suporte ao formato antigo `AAA0000` como fallback raro.
+- RB-11: quando candidatos de OCR divergirem apenas no prefixo por ambiguidade visual (ex.: `Y`/`V`) e estiverem proximos de confianca, o sistema deve marcar como ambiguo e exigir confirmacao manual.
+- RB-12: quando OCR apresentar baixa robustez (pouco suporte entre candidatos, decoder de beam em baixa confianca ou empate curto entre top-2), o sistema nao deve confirmar automaticamente a placa; deve exigir confirmacao manual.
+- RB-13: em leitura OCR baseada em `yolo_box`, o texto reconhecido deve passar por validacao de plausibilidade geometrica do bounding box (aspect ratio/cobertura minima no crop) antes de entrar no ranking final.
+- RB-14: deteccoes YOLO com geometria improvavel para placa (aspect ratio, area relativa e posicao no frame) devem ser descartadas antes da etapa de OCR para evitar capturar chassis/VIN no vidro.
 
 ## 5. Dependencias externas
 

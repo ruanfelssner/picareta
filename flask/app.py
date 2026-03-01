@@ -1,13 +1,15 @@
 """
 Flask API - Picareta
 """
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, Response, stream_with_context
 from flask_cors import CORS
 import base64
 import io
 import json
 import os
 import re
+from queue import Queue, Empty
+from threading import Thread
 from time import perf_counter
 from typing import Dict, List, Optional, Tuple
 
@@ -31,6 +33,11 @@ except Exception as err:  # pragma: no cover - ambiente pode não ter ultralytic
     YOLO = None
     _ultralytics_import_error = str(err)
 
+try:
+    from utils.ocr_corrections import normalize_plate_aggressive
+except Exception:  # pragma: no cover
+    normalize_plate_aggressive = None
+
 app = Flask(__name__)
 CORS(app)
 
@@ -47,6 +54,11 @@ OCR_PREPROCESS_MAX_PIXELS = 1_000_000
 OCR_PRELOAD_MODELS = True
 OCR_AMBIGUOUS_DELTA = 0.06
 OCR_ZERO_PRIORITY_DELTA = 0.05
+OCR_PREFIX_AMBIGUOUS_DELTA = 0.08
+OCR_PREFIX_Y_OVER_V_PRIORITY_DELTA = 0.02
+OCR_PENULTIMATE_2_PRIORITY_DELTA = 0.08
+OCR_FOURTH_7_PRIORITY_DELTA = 0.03
+OCR_PENULTIMATE_2_AMBIGUOUS_DELTA = 0.10
 OCR_MAX_PROCESS_MS = 30_000
 OCR_MAX_VARIANTS = 3
 OCR_NO_YOLO_MAX_FALLBACK_REGIONS = 3
@@ -70,6 +82,33 @@ OCR_TEMPLATE_CHAR_MATCH_WEIGHT = 0.55
 OCR_CANDIDATE_POOL_LIMIT = 80
 OCR_RESPONSE_CANDIDATES_LIMIT = 20
 OCR_TEMPLATE_PATH = os.path.join(BASE_DIR, "models", "char_templates.json")
+OCR_PLATE_ALLOWLIST = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+OCR_BEAMSEARCH_WIDTH = 5
+OCR_BEAMSEARCH_MAX_VARIANTS = 2
+OCR_BEAMSEARCH_MAX_PIXELS = 450_000
+OCR_AGGRESSIVE_CORRECTION = True
+OCR_AGGRESSIVE_EXTRA_PENALTY = 2.6
+OCR_PATTERN_MERCOSUL_BOOST = 0.018
+OCR_PATTERN_OLD_PENALTY = 0.012
+OCR_LOW_CERTAINTY_SINGLE_HIT_CONFIDENCE = 0.86
+OCR_LOW_CERTAINTY_YOLO_SINGLE_HIT_CONFIDENCE = 0.94
+OCR_LOW_CERTAINTY_BEAM_CONFIDENCE = 0.85
+OCR_LOW_CERTAINTY_AGGRESSIVE_CONFIDENCE = 0.90
+OCR_LOW_CERTAINTY_SMALL_GAP = 0.045
+OCR_YOLO_TEXTBOX_MIN_WIDTH_RATIO = 0.42
+OCR_YOLO_TEXTBOX_MIN_HEIGHT_RATIO = 0.18
+OCR_YOLO_TEXTBOX_MAX_HEIGHT_RATIO = 0.86
+OCR_YOLO_TEXTBOX_MIN_AREA_RATIO = 0.08
+OCR_TEXTBOX_MIN_ASPECT = 1.7
+OCR_TEXTBOX_MAX_ASPECT = 10.8
+OCR_YOLO_BOX_MIN_ASPECT = 1.9
+OCR_YOLO_BOX_MAX_ASPECT = 9.4
+OCR_YOLO_BOX_MIN_AREA_RATIO = 0.0015
+OCR_YOLO_BOX_MAX_AREA_RATIO = 0.12
+OCR_YOLO_BOX_MIN_CENTER_Y = 0.26
+OCR_YOLO_BOX_MAX_CENTER_Y = 0.96
+OCR_YOLO_BOX_CENTER_X_MARGIN = 0.48
+OCR_YOLO_OCR_TOKEN_MAX_LEN = 8
 PLATE_REGEX = re.compile(r"^[A-Z]{3}[0-9][A-Z0-9][0-9]{2}$")
 TEMPLATE_OLD = "LLLDDDD"
 TEMPLATE_MERCOSUL = "LLLDLDD"
@@ -99,7 +138,30 @@ DIGIT_FROM_LETTER = {
 # Ambiguidade comum em placas (ex.: 0 <-> 7 em reflexo/sujeira/fonte).
 DIGIT_AMBIGUITY = {
     "0": ("7",),
-    "7": ("0",),
+    "1": ("7",),
+    "2": ("7", "9"),
+    "7": ("0", "1", "2"),
+    "9": ("2",),
+}
+POSITIONAL_DIGIT_AMBIGUITY = {
+    3: {"1": ("7",), "7": ("1",)},
+    5: {"2": ("7", "9"), "7": ("2",), "9": ("2",)},
+    6: {"0": ("7",), "7": ("0",)},
+}
+DIGIT_CHANGE_COST = {
+    ("0", "7"): 0.55,
+    ("7", "0"): 0.55,
+    ("1", "7"): 0.70,
+    ("7", "1"): 0.72,
+    ("2", "9"): 0.78,
+    ("9", "2"): 0.78,
+    ("2", "7"): 0.82,
+    ("7", "2"): 0.82,
+}
+DIGIT_POSITION_COST_MULTIPLIER = {
+    3: 0.92,
+    5: 0.90,
+    6: 0.85,
 }
 # Ambiguidade visual comum em letras (ex.: perspectiva/reflexo/fonte).
 LETTER_AMBIGUITY = {
@@ -125,6 +187,8 @@ LETTER_CHANGE_COST = {
     ("O", "U"): 0.45,
     ("U", "V"): 0.40,
     ("V", "Y"): 0.45,
+    ("V", "U"): 0.42,
+    ("Y", "V"): 0.34,
     ("D", "O"): 0.40,
     ("O", "D"): 0.55,
 }
@@ -163,6 +227,14 @@ def _source_score_boost(source: str) -> float:
         "rescue_full": -0.04,
     }
     return boosts.get(source, 0.0)
+
+
+def _pattern_score_adjustment(pattern: Optional[str]) -> float:
+    if pattern == TEMPLATE_MERCOSUL:
+        return OCR_PATTERN_MERCOSUL_BOOST
+    if pattern == TEMPLATE_OLD:
+        return -OCR_PATTERN_OLD_PENALTY
+    return 0.0
 
 
 def _bbox_score_adjustment(bbox: Optional[List[int]]) -> float:
@@ -204,6 +276,79 @@ def _position_score_adjustment(bbox: Optional[List[int]], width: int, height: in
     if score < -OCR_POSITION_BOOST_MAX:
         return -OCR_POSITION_BOOST_MAX
     return score
+
+
+def _bbox_from_easyocr_local(box: List[List[float]]) -> Optional[List[int]]:
+    try:
+        xs = [int(round(p[0])) for p in box]
+        ys = [int(round(p[1])) for p in box]
+        return [min(xs), min(ys), max(xs), max(ys)]
+    except Exception:
+        return None
+
+
+def _is_plausible_plate_text_box(
+    local_bbox: Optional[List[int]],
+    image_width: int,
+    image_height: int,
+    source: str,
+) -> bool:
+    if not local_bbox or image_width <= 0 or image_height <= 0:
+        return True
+
+    x1, y1, x2, y2 = local_bbox
+    bw = max(1, x2 - x1)
+    bh = max(1, y2 - y1)
+    aspect = bw / float(bh)
+    width_ratio = bw / float(image_width)
+    height_ratio = bh / float(image_height)
+    area_ratio = (bw * bh) / float(max(1, image_width * image_height))
+    cx = ((x1 + x2) / 2.0) / float(image_width)
+    cy = ((y1 + y2) / 2.0) / float(image_height)
+
+    if aspect < OCR_TEXTBOX_MIN_ASPECT or aspect > OCR_TEXTBOX_MAX_ASPECT:
+        return False
+
+    if source.startswith("yolo_box_"):
+        if width_ratio < OCR_YOLO_TEXTBOX_MIN_WIDTH_RATIO:
+            return False
+        if height_ratio < OCR_YOLO_TEXTBOX_MIN_HEIGHT_RATIO or height_ratio > OCR_YOLO_TEXTBOX_MAX_HEIGHT_RATIO:
+            return False
+        if area_ratio < OCR_YOLO_TEXTBOX_MIN_AREA_RATIO:
+            return False
+        if cx < 0.12 or cx > 0.88:
+            return False
+        if cy < 0.10 or cy > 0.90:
+            return False
+
+    return True
+
+
+def _is_plausible_yolo_detection_box(
+    bbox: List[int],
+    image_width: int,
+    image_height: int,
+) -> bool:
+    if not bbox or image_width <= 0 or image_height <= 0:
+        return False
+
+    x1, y1, x2, y2 = bbox
+    bw = max(1, x2 - x1)
+    bh = max(1, y2 - y1)
+    aspect = bw / float(bh)
+    area_ratio = (bw * bh) / float(max(1, image_width * image_height))
+    cx = ((x1 + x2) / 2.0) / float(image_width)
+    cy = ((y1 + y2) / 2.0) / float(image_height)
+
+    if aspect < OCR_YOLO_BOX_MIN_ASPECT or aspect > OCR_YOLO_BOX_MAX_ASPECT:
+        return False
+    if area_ratio < OCR_YOLO_BOX_MIN_AREA_RATIO or area_ratio > OCR_YOLO_BOX_MAX_AREA_RATIO:
+        return False
+    if cy < OCR_YOLO_BOX_MIN_CENTER_Y or cy > OCR_YOLO_BOX_MAX_CENTER_Y:
+        return False
+    if abs(cx - 0.5) > OCR_YOLO_BOX_CENTER_X_MARGIN:
+        return False
+    return True
 
 
 def _decode_template_png(value: str) -> Optional[np.ndarray]:
@@ -568,6 +713,47 @@ def normalize_text(raw: str) -> str:
     return "".join(ch for ch in raw.upper() if ch.isalnum())
 
 
+def _normalize_plate_aggressive_local(plate: str) -> str:
+    if not plate:
+        return plate
+
+    token = normalize_text(plate)
+    if len(token) != 7:
+        return token
+
+    chars = list(token)
+
+    def to_letter(ch: str) -> str:
+        if ch.isalpha():
+            return ch
+        return LETTER_FROM_DIGIT.get(ch, ch)
+
+    def to_digit(ch: str) -> str:
+        if ch.isdigit():
+            return ch
+        return DIGIT_FROM_LETTER.get(ch, ch)
+
+    for idx in (0, 1, 2):
+        chars[idx] = to_letter(chars[idx])
+    chars[3] = to_digit(chars[3])
+    chars[5] = to_digit(chars[5])
+    chars[6] = to_digit(chars[6])
+
+    mercosul = list(chars)
+    mercosul[4] = to_letter(mercosul[4])
+    mercosul_plate = "".join(mercosul)
+    if re.match(r"^[A-Z]{3}[0-9][A-Z][0-9]{2}$", mercosul_plate):
+        return mercosul_plate
+
+    old = list(chars)
+    old[4] = to_digit(old[4])
+    old_plate = "".join(old)
+    if re.match(r"^[A-Z]{3}[0-9]{4}$", old_plate):
+        return old_plate
+
+    return "".join(chars)
+
+
 def _coerce_template(token: str, template: str) -> Optional[Tuple[str, int]]:
     if len(token) != len(template):
         return None
@@ -611,26 +797,90 @@ def _register_candidate(
         best_by_plate[plate] = candidate
 
 
+def _digit_ambiguity_options(index: int, digit: str) -> Tuple[str, ...]:
+    options: List[str] = []
+    for alt in DIGIT_AMBIGUITY.get(digit, ()):
+        if alt != digit and alt not in options:
+            options.append(alt)
+    for alt in POSITIONAL_DIGIT_AMBIGUITY.get(index, {}).get(digit, ()):
+        if alt != digit and alt not in options:
+            options.append(alt)
+    return tuple(options)
+
+
+def _digit_change_penalty(index: int, src: str, dst: str) -> float:
+    base_cost = float(DIGIT_CHANGE_COST.get((src, dst), 1.0))
+    multiplier = float(DIGIT_POSITION_COST_MULTIPLIER.get(index, 1.0))
+    return base_cost * multiplier
+
+
 def _expand_digit_ambiguities(plate: str, pattern: str, base_penalty: int) -> List[Dict]:
     expanded: List[Dict] = []
+    seen: set[str] = set()
+    digit_slots: List[Tuple[int, str, Tuple[str, ...]]] = []
     for index, expected in enumerate(pattern):
         if expected != "D":
             continue
         current = plate[index]
-        alternatives = DIGIT_AMBIGUITY.get(current, ())
+        alternatives = _digit_ambiguity_options(index, current)
+        if alternatives:
+            digit_slots.append((index, current, alternatives))
         for alt_digit in alternatives:
             if alt_digit == current:
                 continue
             alt_plate = f"{plate[:index]}{alt_digit}{plate[index + 1:]}"
             if not PLATE_REGEX.match(alt_plate):
                 continue
+            if alt_plate in seen:
+                continue
+            seen.add(alt_plate)
             expanded.append(
                 {
                     "plate": alt_plate,
-                    "penalty": base_penalty + 1,
+                    "penalty": float(base_penalty) + _digit_change_penalty(index, current, alt_digit),
                     "pattern": pattern,
                 }
             )
+
+    # Expansao de 2 digitos ambiguos para capturar casos com erro duplo (ex.: JBL7D20 -> JBL1D70).
+    combo_limit = 36
+    combo_count = 0
+    for left in range(len(digit_slots)):
+        idx_a, src_a, alts_a = digit_slots[left]
+        for right in range(left + 1, len(digit_slots)):
+            if combo_count >= combo_limit:
+                break
+            idx_b, src_b, alts_b = digit_slots[right]
+            for alt_a in alts_a:
+                for alt_b in alts_b:
+                    if combo_count >= combo_limit:
+                        break
+                    chars = list(plate)
+                    chars[idx_a] = alt_a
+                    chars[idx_b] = alt_b
+                    alt_plate = "".join(chars)
+                    if not PLATE_REGEX.match(alt_plate):
+                        continue
+                    if alt_plate in seen:
+                        continue
+                    seen.add(alt_plate)
+                    combo_penalty = (
+                        float(base_penalty)
+                        + _digit_change_penalty(idx_a, src_a, alt_a)
+                        + _digit_change_penalty(idx_b, src_b, alt_b)
+                        + 0.24
+                    )
+                    expanded.append(
+                        {
+                            "plate": alt_plate,
+                            "penalty": combo_penalty,
+                            "pattern": pattern,
+                        }
+                    )
+                    combo_count += 1
+        if combo_count >= combo_limit:
+            break
+
     return expanded
 
 
@@ -728,13 +978,80 @@ def extract_plate_candidates(text: str) -> List[Dict]:
     return sorted(best_by_plate.values(), key=lambda c: (c["penalty"], template_rank[c["pattern"]], c["plate"]))
 
 
-def _bbox_from_easyocr(box: List[List[float]], offset: Tuple[int, int]) -> Optional[List[int]]:
+def _extract_aggressive_candidates(text: str) -> List[Dict]:
+    if not OCR_AGGRESSIVE_CORRECTION:
+        return []
+    normalize_fn = normalize_plate_aggressive or _normalize_plate_aggressive_local
+
+    token = normalize_text(text)
+    if len(token) < 7:
+        return []
+
+    best_by_plate: Dict[str, Dict] = {}
+    for i in range(len(token) - 6):
+        chunk = token[i:i + 7]
+        normalized = normalize_fn(chunk)
+        if not normalized or len(normalized) != 7:
+            continue
+        normalized = normalize_text(normalized)
+        if len(normalized) != 7 or not PLATE_REGEX.match(normalized):
+            continue
+        pattern = TEMPLATE_MERCOSUL if normalized[4].isalpha() else TEMPLATE_OLD
+        base_penalty = OCR_AGGRESSIVE_EXTRA_PENALTY + (0.45 if pattern == TEMPLATE_OLD else 0.0)
+        current = best_by_plate.get(normalized)
+        candidate = {
+            "plate": normalized,
+            "penalty": base_penalty,
+            "pattern": pattern,
+            "aggressive_normalization": True,
+        }
+        if current is None or float(candidate["penalty"]) < float(current["penalty"]):
+            best_by_plate[normalized] = candidate
+
+    return sorted(best_by_plate.values(), key=lambda item: (float(item["penalty"]), item["plate"]))
+
+
+def _readtext_with_plate_profile(
+    reader,
+    image: np.ndarray,
+    decoder: str,
+    beam_width: int,
+):
+    kwargs = {
+        "detail": 1,
+        "paragraph": False,
+        "allowlist": OCR_PLATE_ALLOWLIST,
+        "decoder": decoder,
+        "beamWidth": beam_width,
+        "min_size": 8,
+        "contrast_ths": 0.08,
+        "adjust_contrast": 0.70,
+        "text_threshold": 0.55,
+        "low_text": 0.25,
+        "link_threshold": 0.20,
+        "mag_ratio": 1.2,
+    }
     try:
-        xs = [int(round(p[0] + offset[0])) for p in box]
-        ys = [int(round(p[1] + offset[1])) for p in box]
-        return [min(xs), min(ys), max(xs), max(ys)]
-    except Exception:
+        return reader.readtext(image, **kwargs)
+    except TypeError:
+        # Compatibilidade com versões do EasyOCR sem todos os kwargs acima.
+        return reader.readtext(
+            image,
+            detail=1,
+            paragraph=False,
+            allowlist=OCR_PLATE_ALLOWLIST,
+            decoder=decoder,
+            beamWidth=beam_width,
+        )
+
+
+def _bbox_from_easyocr(box: List[List[float]], offset: Tuple[int, int]) -> Optional[List[int]]:
+    local_bbox = _bbox_from_easyocr_local(box)
+    if not local_bbox:
         return None
+    x1, y1, x2, y2 = local_bbox
+    ox, oy = offset
+    return [x1 + ox, y1 + oy, x2 + ox, y2 + oy]
 
 
 def _clip_bbox(bbox: List[int], width: int, height: int) -> List[int]:
@@ -922,48 +1239,75 @@ def _ocr_scan(
     for variant_index, (variant, variant_boost) in enumerate(variants):
         if _is_deadline_reached(deadline_at):
             break
-        try:
-            read = reader.readtext(
-                variant,
-                detail=1,
-                paragraph=False,
-                allowlist="ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
-                decoder="greedy",
-                beamWidth=1,
-            )
-        except Exception:
-            continue
 
-        for box, text, conf in read:
-            if float(conf) < min_conf and not source.startswith("yolo"):
+        scan_modes = [("greedy", 1, 0.0)]
+        if (
+            variant_index < OCR_BEAMSEARCH_MAX_VARIANTS
+            and (source.startswith("yolo") or pixels <= OCR_BEAMSEARCH_MAX_PIXELS)
+        ):
+            scan_modes.append(("beamsearch", OCR_BEAMSEARCH_WIDTH, 0.012))
+
+        for decoder, beam_width, decoder_boost in scan_modes:
+            if _is_deadline_reached(deadline_at):
+                break
+            try:
+                read = _readtext_with_plate_profile(
+                    reader,
+                    variant,
+                    decoder=decoder,
+                    beam_width=beam_width,
+                )
+            except Exception:
                 continue
-            matches = extract_plate_candidates(text)
-            if not matches:
-                continue
-            bbox = _bbox_from_easyocr(box, offset)
-            for match in matches:
-                plate = match["plate"]
-                penalty = float(match["penalty"])
-                score = float(conf)
-                score += source_boost
-                if source_confidence is not None:
-                    score += float(source_confidence) * 0.10
-                score += float(variant_boost)
-                if variant_index >= 2:
-                    score += 0.01
-                score += _bbox_score_adjustment(bbox)
-                # Penaliza candidatos que exigiram muitas correções de OCR (ex.: O<->0).
-                score -= penalty * 0.03
-                detections.append({
-                    "plate": plate,
-                    "confidence": min(1.0, round(score, 4)),
-                    "bbox": bbox,
-                    "source": source,
-                    "raw_text": text,
-                    "ocr_confidence": round(float(conf), 4),
-                    "normalization_penalty": round(penalty, 3),
-                    "pattern": match["pattern"],
-                })
+
+            for box, text, conf in read:
+                if float(conf) < min_conf and not source.startswith("yolo"):
+                    continue
+                normalized_text = normalize_text(text)
+                if source.startswith("yolo_box_") and len(normalized_text) > OCR_YOLO_OCR_TOKEN_MAX_LEN:
+                    continue
+                local_bbox = _bbox_from_easyocr_local(box)
+                if not _is_plausible_plate_text_box(
+                    local_bbox,
+                    image_width=variant.shape[1],
+                    image_height=variant.shape[0],
+                    source=source,
+                ):
+                    continue
+                matches = extract_plate_candidates(text)
+                if not matches:
+                    matches = _extract_aggressive_candidates(text)
+                if not matches:
+                    continue
+                bbox = _bbox_from_easyocr(box, offset)
+                for match in matches:
+                    plate = match["plate"]
+                    penalty = float(match["penalty"])
+                    pattern = match.get("pattern")
+                    score = float(conf)
+                    score += source_boost
+                    if source_confidence is not None:
+                        score += float(source_confidence) * 0.10
+                    score += float(variant_boost)
+                    score += float(decoder_boost)
+                    score += _pattern_score_adjustment(str(pattern) if pattern else None)
+                    if variant_index >= 2:
+                        score += 0.01
+                    score += _bbox_score_adjustment(bbox)
+                    # Penaliza candidatos que exigiram muitas correções de OCR (ex.: O<->0).
+                    score -= penalty * 0.03
+                    detections.append({
+                        "plate": plate,
+                        "confidence": min(1.0, round(score, 4)),
+                        "bbox": bbox,
+                        "source": source,
+                        "raw_text": text,
+                        "ocr_confidence": round(float(conf), 4),
+                        "ocr_decoder": decoder,
+                        "normalization_penalty": round(penalty, 3),
+                        "pattern": pattern,
+                        "aggressive_normalization": bool(match.get("aggressive_normalization")),
+                    })
         if _has_strong_candidate(detections):
             break
     return detections
@@ -1149,13 +1493,54 @@ def _is_ambiguous_top_pair(candidates: List[Dict]) -> bool:
 
     first_conf = float(first.get("confidence", 0.0))
     second_conf = float(second.get("confidence", 0.0))
-    if abs(first_conf - second_conf) > OCR_AMBIGUOUS_DELTA:
-        return False
+    conf_gap = abs(first_conf - second_conf)
 
     if first_plate[:6] == second_plate[:6]:
-        return True
+        return conf_gap <= OCR_AMBIGUOUS_DELTA
 
-    return _is_middle_char_letter_digit_ambiguous_pair(first_plate, second_plate)
+    if _is_middle_char_letter_digit_ambiguous_pair(first_plate, second_plate):
+        return conf_gap <= OCR_AMBIGUOUS_DELTA
+
+    if _is_penultimate_digit_two_ambiguous_pair(first_plate, second_plate):
+        return conf_gap <= OCR_PENULTIMATE_2_AMBIGUOUS_DELTA
+
+    if _is_prefix_letter_ambiguous_pair(first_plate, second_plate):
+        return conf_gap <= OCR_PREFIX_AMBIGUOUS_DELTA
+
+    return False
+
+
+def _is_prefix_letter_ambiguous_pair(plate_a: str, plate_b: str) -> bool:
+    if len(plate_a) != 7 or len(plate_b) != 7:
+        return False
+    if plate_a[3:] != plate_b[3:]:
+        return False
+
+    changed = 0
+    for index in range(3):
+        ch_a = plate_a[index]
+        ch_b = plate_b[index]
+        if ch_a == ch_b:
+            continue
+        if ch_b not in LETTER_AMBIGUITY.get(ch_a, ()) and ch_a not in LETTER_AMBIGUITY.get(ch_b, ()):
+            return False
+        changed += 1
+
+    if changed == 0:
+        return False
+
+    # Nao abre ambiguidade se a diferenca de score estiver muito alta.
+    # Isso evita bloquear casos em que um candidato e nitidamente superior.
+    return True
+
+
+def _is_penultimate_digit_two_ambiguous_pair(plate_a: str, plate_b: str) -> bool:
+    if len(plate_a) != 7 or len(plate_b) != 7:
+        return False
+    if plate_a[:5] != plate_b[:5] or plate_a[6] != plate_b[6]:
+        return False
+    pair = {plate_a[5], plate_b[5]}
+    return pair == {"2", "9"}
 
 
 def _is_middle_char_letter_digit_ambiguous_pair(plate_a: str, plate_b: str) -> bool:
@@ -1187,15 +1572,27 @@ def _is_low_certainty_best(candidates: List[Dict]) -> bool:
     hits = int(best.get("support_hits", 1) or 1)
     penalty = float(best.get("normalization_penalty", 99.0))
     source = str(best.get("source") or "")
+    decoder = str(best.get("ocr_decoder") or "")
+    aggressive = bool(best.get("aggressive_normalization"))
 
     if conf < 0.62:
         return True
-    if conf < OCR_LOW_CERTAINTY_CONFIDENCE and hits <= 1:
+    if conf < OCR_LOW_CERTAINTY_SINGLE_HIT_CONFIDENCE and hits <= 1:
+        return True
+    if source.startswith("yolo_box_") and hits <= 1 and conf < OCR_LOW_CERTAINTY_YOLO_SINGLE_HIT_CONFIDENCE:
+        return True
+    if decoder == "beamsearch" and hits <= 1 and conf < OCR_LOW_CERTAINTY_BEAM_CONFIDENCE:
+        return True
+    if aggressive and conf < OCR_LOW_CERTAINTY_AGGRESSIVE_CONFIDENCE:
         return True
     if penalty >= 2 and conf < 0.80:
         return True
     if source in ("full", "middle_band", "rescue_full") and conf < 0.86:
         return True
+    if len(candidates) >= 2:
+        second_conf = float(candidates[1].get("confidence", 0.0))
+        if (conf - second_conf) <= OCR_LOW_CERTAINTY_SMALL_GAP and conf < 0.90:
+            return True
     return False
 
 
@@ -1275,7 +1672,127 @@ def _prioritize_mercosul_middle_letter(candidates: List[Dict]) -> Tuple[List[Dic
     return ordered, False
 
 
-def recognize_plate(img: Image.Image) -> dict:
+def _prioritize_prefix_y_over_v(candidates: List[Dict]) -> Tuple[List[Dict], bool]:
+    if len(candidates) < 2:
+        return candidates, False
+
+    ordered = list(candidates)
+    for idx, item in enumerate(ordered):
+        plate = str(item.get("plate") or "")
+        if len(plate) != 7:
+            continue
+
+        for pos in range(3):
+            if plate[pos] != "V":
+                continue
+            y_variant = f"{plate[:pos]}Y{plate[pos + 1:]}"
+            y_idx = next(
+                (index for index, candidate in enumerate(ordered) if str(candidate.get("plate") or "") == y_variant),
+                None,
+            )
+            if y_idx is None or y_idx < idx:
+                continue
+
+            v_conf = float(item.get("confidence", 0.0))
+            y_candidate = ordered[y_idx]
+            y_conf = float(y_candidate.get("confidence", 0.0))
+            if (v_conf - y_conf) > OCR_PREFIX_Y_OVER_V_PRIORITY_DELTA:
+                continue
+
+            v_penalty = float(item.get("normalization_penalty", 99.0))
+            y_penalty = float(y_candidate.get("normalization_penalty", 99.0))
+            if (y_penalty - v_penalty) > 1:
+                continue
+
+            chosen = ordered.pop(y_idx)
+            ordered.insert(idx, chosen)
+            return ordered, True
+
+    return ordered, False
+
+
+def _prioritize_fourth_digit_one_over_seven(candidates: List[Dict]) -> Tuple[List[Dict], bool]:
+    if len(candidates) < 2:
+        return candidates, False
+
+    ordered = list(candidates)
+    for idx, item in enumerate(ordered):
+        plate = str(item.get("plate") or "")
+        if len(plate) != 7 or plate[3] != "7":
+            continue
+
+        preferred_plate = f"{plate[:3]}1{plate[4:]}"
+        preferred_idx = next(
+            (index for index, candidate in enumerate(ordered) if str(candidate.get("plate") or "") == preferred_plate),
+            None,
+        )
+        if preferred_idx is None or preferred_idx < idx:
+            continue
+
+        current_conf = float(item.get("confidence", 0.0))
+        preferred_candidate = ordered[preferred_idx]
+        preferred_conf = float(preferred_candidate.get("confidence", 0.0))
+        if (current_conf - preferred_conf) > OCR_FOURTH_7_PRIORITY_DELTA:
+            continue
+
+        current_penalty = float(item.get("normalization_penalty", 99.0))
+        preferred_penalty = float(preferred_candidate.get("normalization_penalty", 99.0))
+        if (preferred_penalty - current_penalty) > 1:
+            continue
+
+        chosen = ordered.pop(preferred_idx)
+        ordered.insert(idx, chosen)
+        return ordered, True
+
+    return ordered, False
+
+
+def _prioritize_penultimate_digit_from_two(candidates: List[Dict]) -> Tuple[List[Dict], bool]:
+    if len(candidates) < 2:
+        return candidates, False
+
+    ordered = list(candidates)
+    for idx, item in enumerate(ordered):
+        plate = str(item.get("plate") or "")
+        if len(plate) != 7 or plate[5] != "2":
+            continue
+
+        variants = (f"{plate[:5]}9{plate[6:]}", f"{plate[:5]}7{plate[6:]}")
+        best_idx = None
+        best_conf = -1.0
+        for variant in variants:
+            variant_idx = next(
+                (index for index, candidate in enumerate(ordered) if str(candidate.get("plate") or "") == variant),
+                None,
+            )
+            if variant_idx is None or variant_idx < idx:
+                continue
+            variant_conf = float(ordered[variant_idx].get("confidence", 0.0))
+            if variant_conf > best_conf:
+                best_conf = variant_conf
+                best_idx = variant_idx
+
+        if best_idx is None:
+            continue
+
+        current_conf = float(item.get("confidence", 0.0))
+        if (current_conf - best_conf) > OCR_PENULTIMATE_2_PRIORITY_DELTA:
+            continue
+
+        current_penalty = float(item.get("normalization_penalty", 99.0))
+        preferred_penalty = float(ordered[best_idx].get("normalization_penalty", 99.0))
+        if (preferred_penalty - current_penalty) > 1:
+            continue
+
+        chosen = ordered.pop(best_idx)
+        ordered.insert(idx, chosen)
+        return ordered, True
+
+    return ordered, False
+
+
+def recognize_plate(img: Image.Image, progress_cb=None) -> dict:
+    _emit = lambda pct, stage: progress_cb(pct, stage) if callable(progress_cb) else None  # noqa: E731
     started = perf_counter()
     deadline_at = (started + (OCR_MAX_PROCESS_MS / 1000.0)) if OCR_MAX_PROCESS_MS > 0 else None
     timeout_reached = False
@@ -1283,15 +1800,18 @@ def recognize_plate(img: Image.Image) -> dict:
     height, width = np_img_original.shape[:2]
     np_img_rgb, process_scale = _resize_for_processing(np_img_original)
     proc_height, proc_width = np_img_rgb.shape[:2]
+    _emit(5, "decode")
 
     pipeline = []
     candidates = []
     timings = {}
 
     yolo_model, yolo_model_path, yolo_err = get_yolo_model()
+    _emit(12, "yolo_load")
     if yolo_model is not None and not _is_deadline_reached(deadline_at):
         yolo_started = perf_counter()
         try:
+            _emit(18, "yolo_predict")
             yolo_result = yolo_model.predict(
                 np_img_rgb,
                 conf=0.12,
@@ -1308,6 +1828,9 @@ def recognize_plate(img: Image.Image) -> dict:
                         pipeline.append("deadline_reached:yolo_boxes")
                         break
                     x1, y1, x2, y2 = [int(v) for v in box.xyxy[0].tolist()]
+                    if not _is_plausible_yolo_detection_box([x1, y1, x2, y2], proc_width, proc_height):
+                        pipeline.append(f"yolo_box_rejected:{index}")
+                        continue
                     pad = max(8, int(0.03 * max(proc_width, proc_height)))
                     x1 = max(0, x1 - pad)
                     y1 = max(0, y1 - pad)
@@ -1333,8 +1856,10 @@ def recognize_plate(img: Image.Image) -> dict:
             pipeline.append(f"yolo_failed:{err}")
         finally:
             timings["yolo_ms"] = int(round((perf_counter() - yolo_started) * 1000))
+            _emit(45, "yolo_ocr")
     else:
         pipeline.append("yolo_unavailable")
+        _emit(45, "yolo_skipped")
 
     if not candidates and not _is_deadline_reached(deadline_at):
         contour_started = perf_counter()
@@ -1359,6 +1884,7 @@ def recognize_plate(img: Image.Image) -> dict:
                     pipeline.append(f"contour_short_circuit:{region_name}")
                     break
         timings["contour_ms"] = int(round((perf_counter() - contour_started) * 1000))
+        _emit(62, "contour")
 
     if not candidates and not _is_deadline_reached(deadline_at):
         fallback_started = perf_counter()
@@ -1386,6 +1912,7 @@ def recognize_plate(img: Image.Image) -> dict:
                 break
 
         timings["fallback_ms"] = int(round((perf_counter() - fallback_started) * 1000))
+        _emit(75, "fallback")
 
         # Se YOLO estiver indisponivel e o fallback padrao falhar, roda um passe de resgate
         # mais tolerante antes de desistir.
@@ -1414,6 +1941,7 @@ def recognize_plate(img: Image.Image) -> dict:
                     pipeline.append(f"rescue_short_circuit:{region_name}")
                     break
             timings["fallback_rescue_ms"] = int(round((perf_counter() - rescue_started) * 1000))
+            _emit(83, "rescue")
     elif not candidates and _is_deadline_reached(deadline_at):
         timeout_reached = True
         pipeline.append("deadline_reached:before_fallback")
@@ -1433,6 +1961,15 @@ def recognize_plate(img: Image.Image) -> dict:
     deduped, mercosul_middle_priority_applied = _prioritize_mercosul_middle_letter(deduped)
     if mercosul_middle_priority_applied:
         pipeline.append("prioritize_mercosul_middle_letter")
+    deduped, fourth_digit_priority_applied = _prioritize_fourth_digit_one_over_seven(deduped)
+    if fourth_digit_priority_applied:
+        pipeline.append("prioritize_fourth_digit_one_over_seven")
+    deduped, penultimate_digit_priority_applied = _prioritize_penultimate_digit_from_two(deduped)
+    if penultimate_digit_priority_applied:
+        pipeline.append("prioritize_penultimate_digit_from_two")
+    deduped, prefix_y_over_v_priority_applied = _prioritize_prefix_y_over_v(deduped)
+    if prefix_y_over_v_priority_applied:
+        pipeline.append("prioritize_prefix_y_over_v")
 
     template_rerank_error = None
     template_rerank_info = None
@@ -1444,6 +1981,25 @@ def recognize_plate(img: Image.Image) -> dict:
             pipeline,
         )
         timings["template_rerank_ms"] = int(round((perf_counter() - template_started) * 1000))
+        _emit(90, "rerank")
+
+    # Reaplica prioridades apos rerank de template para evitar que o rerank
+    # desfaça heuristicas de ambiguidade já calibradas em produção.
+    deduped, zero_priority_post_applied = _prioritize_zero_last_digit(deduped)
+    if zero_priority_post_applied:
+        pipeline.append("prioritize_zero_last_digit_post_rerank")
+    deduped, mercosul_middle_priority_post_applied = _prioritize_mercosul_middle_letter(deduped)
+    if mercosul_middle_priority_post_applied:
+        pipeline.append("prioritize_mercosul_middle_letter_post_rerank")
+    deduped, fourth_digit_priority_post_applied = _prioritize_fourth_digit_one_over_seven(deduped)
+    if fourth_digit_priority_post_applied:
+        pipeline.append("prioritize_fourth_digit_one_over_seven_post_rerank")
+    deduped, penultimate_digit_priority_post_applied = _prioritize_penultimate_digit_from_two(deduped)
+    if penultimate_digit_priority_post_applied:
+        pipeline.append("prioritize_penultimate_digit_from_two_post_rerank")
+    deduped, prefix_y_over_v_priority_post_applied = _prioritize_prefix_y_over_v(deduped)
+    if prefix_y_over_v_priority_post_applied:
+        pipeline.append("prioritize_prefix_y_over_v_post_rerank")
 
     if process_scale != 1.0:
         for candidate in deduped:
@@ -1479,6 +2035,14 @@ def recognize_plate(img: Image.Image) -> dict:
             "requires_confirmation": requires_confirmation,
             "zero_priority_applied": zero_priority_applied,
             "mercosul_middle_priority_applied": mercosul_middle_priority_applied,
+            "fourth_digit_priority_applied": fourth_digit_priority_applied,
+            "penultimate_digit_priority_applied": penultimate_digit_priority_applied,
+            "prefix_y_over_v_priority_applied": prefix_y_over_v_priority_applied,
+            "zero_priority_post_applied": zero_priority_post_applied,
+            "mercosul_middle_priority_post_applied": mercosul_middle_priority_post_applied,
+            "fourth_digit_priority_post_applied": fourth_digit_priority_post_applied,
+            "penultimate_digit_priority_post_applied": penultimate_digit_priority_post_applied,
+            "prefix_y_over_v_priority_post_applied": prefix_y_over_v_priority_post_applied,
             "template_rerank": template_rerank_info,
             "template_rerank_error": template_rerank_error,
             "image_scale": round(process_scale, 4),
@@ -1664,6 +2228,81 @@ def _handle_base64_recognition(
         payload["requestId"] = request_id.strip()
 
     return jsonify(payload), 200
+
+
+@app.route("/api/v1/plate/recognize-stream", methods=["POST"])
+def recognize_plate_stream_for_nuxt():
+    """
+    SSE streaming do OCR de placa para o Nuxt.
+    Emite eventos data: {progress, stage} e ao fim data: {progress:100, stage:'done', ok, result, input}.
+    """
+    data = request.get_json(silent=True) or {}
+    base64_input = next(
+        (data.get(f) for f in ("imageBase64", "image_base64", "base64", "image") if data.get(f)),
+        None,
+    )
+    if not base64_input:
+        def _err_gen():
+            yield f"data: {json.dumps({'ok': False, 'error': 'imageBase64_required'})}\n\n"
+        return Response(stream_with_context(_err_gen()), mimetype="text/event-stream"), 400
+
+    filename = data.get("filename")
+    request_id = data.get("requestId")
+
+    q: Queue = Queue()
+
+    def _run():
+        try:
+            img, input_meta = _decode_base64_image(base64_input)
+            result = recognize_plate(
+                img,
+                progress_cb=lambda pct, stage: q.put(("progress", pct, stage)),
+            )
+            q.put(("done", result, input_meta))
+        except ValueError as exc:
+            q.put(("error", str(exc)))
+        except Exception as exc:
+            q.put(("error", str(exc)))
+
+    thread = Thread(target=_run, daemon=True)
+    thread.start()
+
+    def _generate():
+        while True:
+            try:
+                item = q.get(timeout=50)
+            except Empty:
+                yield f"data: {json.dumps({'ok': False, 'error': 'timeout'})}\n\n"
+                break
+            kind = item[0]
+            if kind == "progress":
+                _, pct, stage = item
+                yield f"data: {json.dumps({'progress': pct, 'stage': stage})}\n\n"
+            elif kind == "done":
+                _, result, input_meta = item
+                resp_input = dict(input_meta)
+                if isinstance(filename, str) and filename.strip():
+                    resp_input["filename"] = filename.strip()
+                payload = {
+                    "ok": True,
+                    "progress": 100,
+                    "stage": "done",
+                    "input": resp_input,
+                    "result": result,
+                }
+                if isinstance(request_id, str) and request_id.strip():
+                    payload["requestId"] = request_id.strip()
+                yield f"data: {json.dumps(payload)}\n\n"
+                break
+            elif kind == "error":
+                _, msg = item
+                yield f"data: {json.dumps({'ok': False, 'error': msg})}\n\n"
+                break
+
+    resp = Response(stream_with_context(_generate()), mimetype="text/event-stream")
+    resp.headers["Cache-Control"] = "no-cache"
+    resp.headers["X-Accel-Buffering"] = "no"
+    return resp
 
 
 def _maybe_preload_models():

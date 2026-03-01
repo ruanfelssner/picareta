@@ -1,16 +1,39 @@
 <template>
-  <div class="min-h-screen space-y-4 pb-10">
-    <section class="surface-card rounded-2xl p-3">
-        <div class="relative overflow-hidden rounded-2xl bg-white mb-2">
+  <div class="min-h-screen space-y-5 pb-10">
+    <section class="surface-card rounded-2xl overflow-hidden">
+        <div
+          class="relative"
+          @touchstart="onPhotoTouchStart"
+          @touchmove="onPhotoTouchMove"
+          @touchend="onPhotoTouchEnd"
+        >
           <img
             v-if="displayPhotoSrc"
             :src="displayPhotoSrc"
-            class="h-[44vh] max-h-[54vh] min-h-64 w-full bg-slate-900 object-contain"
+            :style="photoTransformStyle"
+            class="h-[44vh] max-h-[54vh] min-h-64 w-full bg-slate-900 object-contain cursor-pointer select-none block"
             :alt="isPlateFocusedPreview ? 'Crop da placa em foco' : 'Foto principal do veículo'"
+            draggable="false"
+            @click="openOriginalPhotoModal"
           >
 
-          <div v-if="processingOcr" class="absolute inset-0 flex items-center justify-center bg-slate-900/45">
-            <div class="rounded-xl bg-white/95 px-3 py-2 text-xs font-semibold text-slate-700">Processando OCR...</div>
+          <div v-if="processingOcr" class="absolute inset-0 flex items-center justify-center bg-slate-900/55">
+            <div class="flex flex-col items-center gap-1.5 rounded-xl bg-white/95 px-5 py-3 shadow-lg min-w-36">
+              <div class="flex items-center gap-2">
+                <svg class="h-4 w-4 shrink-0 animate-spin text-slate-700" fill="none" viewBox="0 0 24 24">
+                  <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" />
+                  <path class="opacity-80" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" />
+                </svg>
+                <span class="text-xs font-bold tabular-nums text-slate-700">{{ ocrProgress }}%</span>
+              </div>
+              <div class="h-1 w-full rounded-full bg-slate-200 overflow-hidden">
+                <div
+                  class="h-full rounded-full bg-slate-700 transition-all duration-300"
+                  :style="{ width: ocrProgress + '%' }"
+                />
+              </div>
+              <span class="text-[10px] font-medium text-slate-500 text-center leading-tight">{{ ocrStageLabel }}</span>
+            </div>
           </div>
 
           <div
@@ -33,10 +56,20 @@
             Enviar novamente
           </button>
         </div>
+        <div class="p-4 space-y-3">
+            <div v-if="ocrNotFound" class="flex items-start gap-2 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2.5">
+              <svg class="mt-0.5 h-4 w-4 shrink-0 text-rose-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+              </svg>
+              <div>
+                <p class="text-xs font-bold text-rose-700">Nenhuma placa identificada</p>
+                <p class="text-[11px] text-rose-600 mt-0.5">O OCR não encontrou a placa na imagem. Tente uma foto mais próxima e bem iluminada, ou digite a placa manualmente abaixo.</p>
+              </div>
+            </div>
             <p v-if="displayPhotoSrc" class="text-[10px] font-bold uppercase tracking-wider text-slate-600">
               Placa
             </p>
-            <div v-if="displayPhotoSrc" class="flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 p-2 mb-2">
+            <div v-if="displayPhotoSrc" class="flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 p-2">
               <input
                 :value="draft.plate"
                 class="h-12 min-w-0 flex-1 rounded-lg border border-slate-200 bg-white px-3 text-lg font-bold tracking-[0.1em] uppercase text-slate-900 outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
@@ -57,7 +90,7 @@
                 </svg>
               </button>
             </div>
-            <div v-if="plateCandidates.length > 0" class="flex flex-wrap items-center gap-x-3 gap-y-1.5 pl-1">
+            <div v-if="plateCandidates.length > 0" class="flex flex-wrap items-center gap-x-3 gap-y-1.5 pl-1 pt-1 border-t border-slate-100">
               <span class="text-xs font-semibold text-slate-500">Sugestões:</span>
               <button
                 v-for="candidate in plateCandidates"
@@ -71,7 +104,6 @@
                 {{ candidate }}
               </button>
             </div>
-        <div>
           <input
             ref="primaryCameraInputRef"
             class="hidden"
@@ -96,26 +128,9 @@
         </div>
     </section>
 
-    <div
-      v-if="statusMessage"
-      class="rounded-xl border px-3 py-2 text-sm font-medium"
-      :class="statusTone === 'ok'
-        ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
-        : statusTone === 'warn'
-          ? 'border-amber-200 bg-amber-50 text-amber-800'
-          : 'border-rose-200 bg-rose-50 text-rose-800'"
-    >
-      {{ statusMessage }}
-    </div>
+    <section v-if="loadingLookup || canShowVehicleData" class="space-y-5">
 
-    <section class="space-y-5">
-      <div v-if="!plateCheckAttempted && !loadingLookup" class="surface-card rounded-2xl p-3">
-        <p class="text-sm font-semibold text-slate-800">
-          Confirme a placa no botão de ícone para liberar os dados do veículo.
-        </p>
-      </div>
-
-      <div v-else-if="loadingLookup" class="surface-card rounded-2xl p-3">
+      <div v-if="loadingLookup" class="surface-card rounded-2xl p-3">
         <div class="flex items-center gap-3">
           <div class="h-5 w-5 animate-spin rounded-full border-2 border-slate-400 border-t-transparent" />
           <p class="text-sm font-semibold text-slate-700">Consultando placa e FIPE...</p>
@@ -931,6 +946,25 @@ const localCars = ref<AuctionCarRecord[]>([])
 
 const loadingLookup = ref(false)
 const processingOcr = ref(false)
+const ocrProgress = ref(0)
+const ocrStage = ref('')
+const ocrNotFound = ref(false)
+
+const OCR_STAGE_LABELS: Record<string, string> = {
+  decode: 'Decodificando imagem...',
+  yolo_load: 'Carregando detector...',
+  yolo_predict: 'Detectando placa...',
+  yolo_ocr: 'Lendo caracteres (YOLO)...',
+  yolo_skipped: 'Detector indisponível...',
+  contour: 'Analisando contornos...',
+  fallback: 'Buscando regiões alternativas...',
+  rescue: 'Tentando recuperação...',
+  rerank: 'Ranqueando candidatos...',
+  done: 'Concluído!',
+}
+
+const ocrStageLabel = computed(() => OCR_STAGE_LABELS[ocrStage.value] ?? 'Processando...')
+
 const addingCost = ref(false)
 const plateCandidates = ref<string[]>([])
 const plateCandidateDetails = ref<OcrCandidateDetail[]>([])
@@ -1275,11 +1309,58 @@ const resolveCandidateDetails = (candidates: Array<{ plate?: string; confidence?
   return result
 }
 
+// --- OCR streaming via SSE ---
+type OcrStreamResponse = {
+  ok: boolean
+  input: Record<string, unknown>
+  result: {
+    plate: string | null
+    confidence: number
+    bbox: number[] | null
+    candidates: Array<{ plate: string; confidence: number; bbox: number[] | null; source: string }>
+  }
+  requestId?: string
+}
+
+const streamPlateOcr = async (payload: { imageBase64: string; filename?: string; requestId?: string }): Promise<OcrStreamResponse> => {
+  const res = await fetch('/api/v1/plate/recognize-stream', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+
+  if (!res.ok || !res.body) {
+    throw new Error(`OCR stream falhou: HTTP ${res.status}`)
+  }
+
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    const lines = buffer.split('\n')
+    buffer = lines.pop() ?? ''
+    for (const line of lines) {
+      if (!line.startsWith('data: ')) continue
+      const data = JSON.parse(line.slice(6)) as Record<string, unknown>
+      if (data.error) throw new Error(String(data.error))
+      if (typeof data.progress === 'number') ocrProgress.value = data.progress
+      if (typeof data.stage === 'string') ocrStage.value = data.stage
+      if (data.stage === 'done') return data as unknown as OcrStreamResponse
+    }
+  }
+
+  throw new Error('SSE encerrado sem resultado')
+}
+
 const extractPlateFromPhoto = async (imageBase64: string) => {
   processingOcr.value = true
 
   try {
-    const response = await api.extractPlateFromImage({
+    const response = await streamPlateOcr({
       imageBase64,
       filename: 'camera-upload',
       requestId: createId(),
@@ -1293,6 +1374,7 @@ const extractPlateFromPhoto = async (imageBase64: string) => {
     plateCandidates.value = dedupedCandidates
 
     const firstCandidate = dedupedCandidates[0] || normalizePlate(response.result.plate || '')
+    ocrNotFound.value = !firstCandidate
     if (firstCandidate) {
       draft.plate = firstCandidate
     }
@@ -1313,9 +1395,15 @@ const extractPlateFromPhoto = async (imageBase64: string) => {
   } catch (error) {
     plateCandidates.value = []
     plateCandidateDetails.value = []
+    ocrNotFound.value = false
     setStatus(readErrorMessage(error), 'error')
   } finally {
+    ocrProgress.value = 100
+    ocrStage.value = 'done'
+    await new Promise(resolve => setTimeout(resolve, 220))
     processingOcr.value = false
+    ocrProgress.value = 0
+    ocrStage.value = ''
   }
 }
 
@@ -1390,6 +1478,7 @@ const onPrimaryPhotoSelected = async (event: Event) => {
     const optimized = await optimizeImageForOcr(dataUrl)
 
     plateCheckAttempted.value = false
+    ocrNotFound.value = false
     draft.photoDataUrl = optimized
     if (!draft.galleryPhotos.includes(optimized)) {
       // Mantem apenas fotos extras na galeria, sem duplicar a principal.
@@ -1445,6 +1534,110 @@ const openGalleryModalWithPhotos = (photos: string[], index = 0, title = 'Galeri
 const openGalleryModal = (index: number) => {
   openGalleryModalWithPhotos(draft.galleryPhotos, index, 'Galeria do veículo')
 }
+
+// --- Photo pinch-zoom & pan ---
+const photoScale = ref(1)
+const photoTx = ref(0)
+const photoTy = ref(0)
+const photoAnimated = ref(false)
+
+const photoTransformStyle = computed(() => ({
+  transform: `translate(${photoTx.value}px, ${photoTy.value}px) scale(${photoScale.value})`,
+  transformOrigin: 'center center',
+  transition: photoAnimated.value ? 'transform 0.25s ease' : 'none',
+  willChange: 'transform',
+}))
+
+let _pinchInitDist = 0
+let _pinchInitScale = 1
+let _isPinching = false
+let _panStartX = 0
+let _panStartY = 0
+let _panInitTx = 0
+let _panInitTy = 0
+let _isPanning = false
+let _lastTapMs = 0
+
+const _pinchDist = (t1: Touch, t2: Touch) => {
+  const dx = t1.clientX - t2.clientX
+  const dy = t1.clientY - t2.clientY
+  return Math.sqrt(dx * dx + dy * dy)
+}
+
+const _clampPhotoPan = () => {
+  const limit = (photoScale.value - 1) * 220
+  photoTx.value = Math.max(-limit, Math.min(limit, photoTx.value))
+  photoTy.value = Math.max(-limit, Math.min(limit, photoTy.value))
+}
+
+const resetPhotoZoom = () => {
+  photoAnimated.value = true
+  photoScale.value = 1
+  photoTx.value = 0
+  photoTy.value = 0
+  setTimeout(() => { photoAnimated.value = false }, 300)
+}
+
+const onPhotoTouchStart = (e: TouchEvent) => {
+  photoAnimated.value = false
+  if (e.touches.length === 2) {
+    _isPinching = true
+    _isPanning = false
+    _pinchInitDist = _pinchDist(e.touches[0]!, e.touches[1]!)
+    _pinchInitScale = photoScale.value
+    e.preventDefault()
+  } else if (e.touches.length === 1) {
+    const now = Date.now()
+    if (now - _lastTapMs < 280) {
+      resetPhotoZoom()
+      _lastTapMs = 0
+      e.preventDefault()
+      return
+    }
+    _lastTapMs = now
+    if (photoScale.value > 1) {
+      _isPanning = true
+      _panStartX = e.touches[0]!.clientX
+      _panStartY = e.touches[0]!.clientY
+      _panInitTx = photoTx.value
+      _panInitTy = photoTy.value
+      e.preventDefault()
+    }
+  }
+}
+
+const onPhotoTouchMove = (e: TouchEvent) => {
+  if (e.touches.length === 2 && _isPinching) {
+    e.preventDefault()
+    const dist = _pinchDist(e.touches[0]!, e.touches[1]!)
+    photoScale.value = Math.max(1, Math.min(5, _pinchInitScale * (dist / _pinchInitDist)))
+    if (photoScale.value <= 1) { photoTx.value = 0; photoTy.value = 0 }
+  } else if (e.touches.length === 1 && _isPanning) {
+    e.preventDefault()
+    photoTx.value = _panInitTx + (e.touches[0]!.clientX - _panStartX)
+    photoTy.value = _panInitTy + (e.touches[0]!.clientY - _panStartY)
+    _clampPhotoPan()
+  }
+}
+
+const onPhotoTouchEnd = (e: TouchEvent) => {
+  if (_isPinching && e.touches.length < 2) {
+    _isPinching = false
+    if (photoScale.value < 1.15) resetPhotoZoom()
+    else _clampPhotoPan()
+  }
+  if (e.touches.length === 0) _isPanning = false
+}
+
+const openOriginalPhotoModal = () => {
+  if (photoScale.value > 1.05) return
+  const original = draft.photoDataUrl
+  if (!original) return
+  const photos = draft.plateCropDataUrl ? [original, draft.plateCropDataUrl] : [original]
+  openGalleryModalWithPhotos(photos, 0, 'Foto original')
+}
+
+watch(() => draft.photoDataUrl, () => resetPhotoZoom())
 
 const closeGalleryModal = () => {
   galleryModalOpen.value = false
@@ -1809,6 +2002,7 @@ const clearDraft = () => {
 
   plateCandidates.value = []
   plateCandidateDetails.value = []
+  ocrNotFound.value = false
   marginWasEdited.value = false
   targetMarginValue.value = 10000
   plateCheckAttempted.value = false
@@ -1881,6 +2075,7 @@ const editCurrentCar = (record: AuctionCarRecord) => {
 
   plateCandidates.value = []
   plateCandidateDetails.value = []
+  ocrNotFound.value = false
   plateCheckAttempted.value = true
   isEditingCurrentCar.value = true
 
