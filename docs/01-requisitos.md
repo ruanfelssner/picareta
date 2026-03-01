@@ -54,11 +54,43 @@ O projeto Picareta precisa permitir avaliacao rapida de carros de leilao no celu
   - acima disso, progressao continua por faixas.
 - RF-07: permitir salvar e listar carros localmente no aparelho (IndexedDB) para uso offline.
 - RF-08: permitir reabrir e editar registros salvos localmente.
+- RF-08.1: ao abrir um carro salvo para edicao, a UI deve exibir acao explicita de "Fechar edicao" para voltar ao estado inicial da home.
 - RF-09: sincronizar registro para API server.
 - RF-10: expor API com colecao dedicada para carros de leilao (`auction_cars`).
 - RF-11: disponibilizar instalacao do app como PWA no celular (incluindo iPhone via Safari).
 - RF-11.1: mostrar modal orientando instalacao quando app nao estiver instalado.
 - RF-11.2: quando navegador suportar `beforeinstallprompt`, permitir acao direta de instalacao pela modal.
+
+### 2.1 Ajustes UX Mobile (ciclo 2026-02)
+
+- RF-12: fluxo padrao deve priorizar avaliacao de 1 veiculo por vez (sem dependencia da fila visivel na home).
+- RF-12.1: o bloco "Foto do veiculo" deve ocupar a largura util da tela, sem camada interna adicional que reduza area de captura.
+- RF-12.2: "Tirar foto" deve ser acao primaria e "Escolher da galeria" deve ser acao secundaria compacta (icone + texto curto).
+- RF-12.3: a imagem principal apos OCR deve priorizar o `crop` da placa como thumbnail; fotos completas devem ficar na galeria do carro.
+- RF-12.4: fila de processamento deve ficar oculta por padrao; quando habilitada, deve funcionar como modo avancado sem ocupar area fixa.
+- RF-12.5: sugestoes OCR para confirmacao manual devem exibir no maximo 3 candidatos.
+- RF-12.6: no bloco de dados, placa deve ser `input` sempre editavel com botao unico `Check` para consultar/reconsultar FIPE.
+- RF-12.7: apos editar manualmente a placa, o usuario deve conseguir executar novo `Check` sem trocar de tela.
+- RF-12.8: incluir campo dedicado de quilometragem (`KM`) no topo dos dados do veiculo.
+- RF-12.9: permitir anexar multiplas fotos adicionais no proprio bloco de dados do veiculo.
+- RF-12.10: a home deve listar "Carros atuais" em lista simples para retomada rapida.
+- RF-13: tipo de monta deve suportar tres opcoes: `sem_monta`, `pequena`, `media`.
+- RF-13.1: em `sem_monta`, o desconto de venda sobre FIPE deve ser de 0%.
+- RF-13.2: em `sem_monta`, o custo padrao `Leilao` nao deve ser adicionado automaticamente.
+- RF-13.3: seletor de custos deve ter area de toque ampliada e legibilidade mobile.
+- RF-13.4: custos com valor sugerido por faixa FIPE devem preencher valor automaticamente em todas as opcoes configuradas.
+- RF-13.5: o total de custos dentro do bloco de custos deve ser exibido em texto discreto (sem card de destaque visual).
+- RF-13.6: deve existir item automatico de custo por tipo de monta (`Tipo monta`), recalculado dinamicamente ao trocar entre `sem_monta`, `pequena` e `media` e ao alterar a FIPE.
+- RF-14: bloco de decisao financeira deve exibir 4 cards: `Valor compra`, `Media venda`, `Custos`, `Lucro total`.
+- RF-14.1: substituir o rotulo "Valor maximo no leilao" por "Valor compra".
+- RF-14.2: `Valor compra` padrao deve seguir `FIPE - margem alvo - custos`.
+- RF-14.3: `Valor compra` deve permitir edicao manual por check/toggle no proprio card.
+- RF-14.4: substituir o rotulo "Valor medio de venda" por "Media venda".
+- RF-14.5: remover a secao "Detalhes" e manter salvamento no fluxo principal da tela.
+- RF-15: conceito de "Carros salvos" deve migrar para "Carros atuais".
+- RF-15.1: cada carro deve possuir status operacional minimo (`em_andamento`, `adquirido`, `anunciado`, `vendido`).
+- RF-15.2: a acao rapida na lista deve seguir a sequencia operacional: `em_andamento -> Adquirir -> Anunciar -> Vender -> Vendido -> Reativar -> em_andamento`.
+- RF-15.3: quando status for `vendido`, o card em "Carros atuais" deve usar visual em tons de cinza para indicar encerramento.
 
 ## 3. Requisitos nao funcionais
 
@@ -67,13 +99,21 @@ O projeto Picareta precisa permitir avaliacao rapida de carros de leilao no celu
 - RNF-03: tempo de resposta percebido deve ser imediato para calculo de margem (sem roundtrip para API).
 - RNF-04: validacao de payload no backend para reduzir dados inconsistentes.
 - RNF-05: arquitetura deve separar camada de UI, regras de calculo e integracao externa.
+- RNF-06: fluxo principal deve reduzir friccao para no maximo 2 a 3 toques entre foto inicial e analise de margem.
+- RNF-07: inputs, selects e botoes interativos devem respeitar area minima de toque de 44px no mobile.
+- RNF-08: componentes secundarios (fila avancada/modais de sugestao) devem ser opcionais e nao competir com a tarefa principal de avaliacao.
 
 ## 4. Regras de negocio
 
-- RB-01: margem percentual = `(lucro estimado / valor FIPE) * 100`.
-- RB-02: lucro estimado = `valor FIPE - (valor compra + custos totais)`.
+- RB-01: margem percentual = `(lucro estimado / valor venda estimado) * 100`.
+- RB-02: lucro estimado = `valor venda estimado - (valor compra + custos totais)`.
 - RB-03: custos negativos nao sao permitidos.
 - RB-04: placa deve ser normalizada para formato alfanumerico uppercase com ate 7 caracteres.
+- RB-05: valor venda estimado deve aplicar fator por tipo de monta (`sem_monta=100% FIPE`, `pequena=95% FIPE`, `media=80% FIPE`).
+- RB-06: valor compra padrao deve ser calculado por `FIPE - margem alvo - custos`, com opcao de override manual quando habilitada.
+- RB-07: custo padrao `Leilao` deve ser automatico apenas quando tipo de monta for diferente de `sem_monta`.
+- RB-08: novo registro deve iniciar com status `em_andamento`.
+- RB-09: custo automatico `Tipo monta` deve permanecer sincronizado com o tipo de monta selecionado e com a faixa FIPE vigente.
 
 ## 5. Dependencias externas
 

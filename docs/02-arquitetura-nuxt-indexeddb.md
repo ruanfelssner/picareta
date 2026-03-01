@@ -119,3 +119,23 @@ A aplicação roda em containers Docker orquestrados via docker-compose:
 - **redis**: Redis para filas/cache (porta 16379)
 
 Processos no container `app` são gerenciados por `supervisord`.
+
+## 7. Evolucao de arquitetura (UI/UX v2)
+
+Para suportar o fluxo "1 veiculo por vez" e os ajustes de UX mobile, a evolucao tecnica deve considerar:
+
+- Extensao do tipo `AuctionCarRecord` com:
+  - `km: number | null`
+  - `status: 'em_andamento' | 'adquirido' | 'anunciado' | 'vendido'`
+  - `plateCropDataUrl?: string`
+  - `galleryPhotos?: string[]`
+  - `purchaseOverrideEnabled?: boolean`
+- Persistencia local (IndexedDB):
+  - manter compatibilidade com registros antigos sem esses campos.
+  - preencher defaults na leitura (`status='em_andamento'`, `km=null`, galerias vazias).
+- Regras de calculo:
+  - incluir `mountClass='sem_monta'` na funcao compartilhada (`shared/valuation.ts`).
+  - condicionar custo padrao `Leilao` apenas quando `mountClass !== 'sem_monta'`.
+- UI principal:
+  - fila de fotos deve ser tratada como recurso avancado opcional, nao como componente fixo da home.
+  - confirmacao de placa deve ser centralizada em input + botao `Check`, com no maximo 3 sugestoes OCR.

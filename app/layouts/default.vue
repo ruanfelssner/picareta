@@ -30,20 +30,11 @@
             </div>
             <p v-if="plateFipeQuotaError" class="max-w-32 truncate text-[10px] text-rose-600">{{ plateFipeQuotaError }}</p>
           </div>
-
-          <button
-            class="rounded-lg border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100"
-            type="button"
-            @click="goToSavedCars"
-          >
-            Carros salvos
-            <span v-if="savedCarsCount > 0" class="ml-1.5 rounded-full bg-slate-900 px-2 py-0.5 text-xs text-white">{{ savedCarsCount }}</span>
-          </button>
         </div>
       </div>
     </header>
 
-    <main class="mx-auto w-full max-w-5xl px-4 pt-6 sm:px-6">
+    <main class="mx-auto w-full max-w-5xl px-2">
       <slot />
     </main>
 
@@ -55,8 +46,6 @@
 import { useAuctionCarsApi } from '~/composables/useAuctionCarsApi'
 import type { PlateFipeQuotaInfo } from '@core/shared/types/auction'
 
-const savedCarsCount = useState<number>('savedCarsCount', () => 0)
-const triggerSavedCars = useState<number>('triggerSavedCars', () => 0)
 const triggerStep1 = useState<number>('triggerStep1', () => 0)
 const plateFipeQuota = useState<PlateFipeQuotaInfo | null>('plateFipeQuota', () => null)
 const plateFipeQuotaLoading = useState<boolean>('plateFipeQuotaLoading', () => false)
@@ -85,10 +74,6 @@ const refreshPlateFipeQuota = async () => {
   } finally {
     plateFipeQuotaLoading.value = false
   }
-}
-
-const goToSavedCars = () => {
-  triggerSavedCars.value++
 }
 
 const goToStep1 = () => {

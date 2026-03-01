@@ -14,21 +14,28 @@ export interface AuctionSummary {
   targetReached: boolean
 }
 
-export type MountClass = 'pequena' | 'media'
+export type MountClass = 'sem_monta' | 'pequena' | 'media'
+
+export type AuctionCarStatus = 'em_andamento' | 'adquirido' | 'anunciado' | 'vendido'
 
 export interface AuctionCarRecord {
   id: string
   plate: string
   photoDataUrl?: string
+  plateCropDataUrl?: string
+  galleryPhotos?: string[]
   brand: string
   model: string
   year: number | null
+  km?: number | null
   fipeValue: number
   purchaseValue: number
+  purchaseOverrideEnabled?: boolean
   costs: CostItem[]
   targetMarginPercent: number
   mountClass: MountClass
   notes: string
+  status?: AuctionCarStatus
   createdAt: string
   updatedAt: string
   summary: AuctionSummary

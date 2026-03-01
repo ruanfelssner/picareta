@@ -19,6 +19,9 @@ export function calculateTotalCosts(costs: CostItem[]) {
 
 export function calculateSaleValue(fipeValue: number, mountClass: MountClass): number {
   const fipe = toMoney(fipeValue)
+  if (mountClass === 'sem_monta') {
+    return fipe
+  }
   if (mountClass === 'pequena') {
     return fipe * 0.95 // 5% abaixo da FIPE
   } else {
