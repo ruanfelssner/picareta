@@ -1,5 +1,5 @@
 <template>
-  <div class="min-h-screen space-y-5 pb-10">
+  <div class="min-h-screen space-y-5 py-5">
     <section class="surface-card rounded-2xl overflow-hidden">
         <div
           class="relative"
@@ -43,6 +43,30 @@
             Foco na placa
           </div>
 
+          <div v-if="displayPhotoSrc" class="absolute left-2 top-2 flex items-center gap-1">
+            <button
+              class="inline-flex items-center justify-center rounded-lg bg-slate-950/80 p-1.5 text-white hover:bg-rose-700/90"
+              type="button"
+              title="Limpar e recomeçar"
+              @click="clearDraft(); resetPhotoZoom()"
+            >
+              <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+            <button
+              class="inline-flex items-center justify-center rounded-lg bg-slate-950/80 p-1.5 text-white hover:bg-slate-700/90 disabled:opacity-50"
+              type="button"
+              title="Retentar OCR com a mesma foto"
+              :disabled="processingOcr"
+              @click="extractPlateFromPhoto(draft.photoDataUrl)"
+            >
+              <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+              </svg>
+            </button>
+          </div>
+
           <button
             v-if="displayPhotoSrc"
             class="absolute right-2 top-2 inline-flex items-center gap-1 rounded-lg bg-slate-950/80 px-2.5 py-1.5 text-[11px] font-semibold text-white hover:bg-slate-950"
@@ -72,7 +96,7 @@
             <div v-if="displayPhotoSrc" class="flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 p-2">
               <input
                 :value="draft.plate"
-                class="h-12 min-w-0 flex-1 rounded-lg border border-slate-200 bg-white px-3 text-lg font-bold tracking-[0.1em] uppercase text-slate-900 outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
+                class="h-12 min-w-0 flex-1 rounded-lg border border-slate-200 bg-white px-3 text-lg font-bold tracking-widest uppercase text-slate-900 outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
                 maxlength="8"
                 placeholder="AAA0A00"
                 @input="onPlateInput"
@@ -272,7 +296,7 @@
             </select>
             <input
               :value="formatMoneyInput(newCostAmount)"
-              class="field-input h-10 !w-28 shrink-0 text-sm"
+              class="field-input h-10 w-28! shrink-0 text-sm"
               type="text"
               inputmode="decimal"
               list="cost-value-presets"
@@ -429,6 +453,49 @@
                 Vendido
               </button>
             </div>
+
+            <label class="field-label mt-3 block">Interessado</label>
+            <div class="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-4">
+              <button
+                class="flex-1 rounded-lg border-2 px-3 py-2 text-sm font-semibold"
+                :class="draft.interestedPreset === 'ruan' ? 'border-indigo-500 bg-indigo-50 text-indigo-800' : 'border-slate-300 bg-white text-slate-700'"
+                type="button"
+                @click="draft.interestedPreset = 'ruan'; draft.interestedOther = ''"
+              >
+                Ruan
+              </button>
+              <button
+                class="flex-1 rounded-lg border-2 px-3 py-2 text-sm font-semibold"
+                :class="draft.interestedPreset === 'vinicius' ? 'border-indigo-500 bg-indigo-50 text-indigo-800' : 'border-slate-300 bg-white text-slate-700'"
+                type="button"
+                @click="draft.interestedPreset = 'vinicius'; draft.interestedOther = ''"
+              >
+                Vinicius
+              </button>
+              <button
+                class="flex-1 rounded-lg border-2 px-3 py-2 text-sm font-semibold"
+                :class="draft.interestedPreset === 'jhow' ? 'border-indigo-500 bg-indigo-50 text-indigo-800' : 'border-slate-300 bg-white text-slate-700'"
+                type="button"
+                @click="draft.interestedPreset = 'jhow'; draft.interestedOther = ''"
+              >
+                Jhow
+              </button>
+              <button
+                class="flex-1 rounded-lg border-2 px-3 py-2 text-sm font-semibold"
+                :class="draft.interestedPreset === 'outro' ? 'border-indigo-500 bg-indigo-50 text-indigo-800' : 'border-slate-300 bg-white text-slate-700'"
+                type="button"
+                @click="draft.interestedPreset = 'outro'"
+              >
+                Outro
+              </button>
+            </div>
+
+            <input
+              v-if="draft.interestedPreset === 'outro'"
+              v-model="draft.interestedOther"
+              class="field-input mt-2"
+              placeholder="Nome do interessado"
+            >
           </div>
 
           <div>
@@ -468,24 +535,33 @@
     <section id="current-cars" class="surface-card rounded-2xl p-3">
       <div class="mb-4 flex items-center justify-between gap-2">
         <h2 class="text-xl font-bold text-slate-900">Carros atuais</h2>
-        <span class="text-xs font-semibold uppercase tracking-wider text-slate-500">{{ localCars.length }} registros</span>
+        <span class="text-xs font-semibold uppercase tracking-wider text-slate-500">{{ filteredLocalCars.length }} registros</span>
       </div>
 
-      <div v-if="!indexedDb.isSupported" class="rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
-        IndexedDB não está disponível neste navegador.
-      </div>
+      <template v-if="!showCurrentCarsLoading">
+        <div>
+          <div class="mb-4">
+            <label class="field-label">Filtrar por interessado</label>
+            <select v-model="interestedFilter" class="field-input mt-1 h-11">
+              <option value="todos">Todos</option>
+              <option value="ruan">Ruan</option>
+              <option value="vinicius">Vinicius</option>
+              <option value="jhow">Jhow</option>
+              <option value="outro">Outro</option>
+            </select>
+          </div>
 
-      <div v-else-if="localCars.length === 0" class="rounded-xl border border-slate-200 bg-white/70 px-3 py-5 text-center text-sm text-slate-600">
-        Nenhum carro atual salvo ainda.
-      </div>
+          <div v-if="filteredLocalCars.length === 0" class="rounded-xl border border-slate-200 bg-white/70 px-3 py-5 text-center text-sm text-slate-600">
+            {{ interestedFilter === 'todos' ? 'Nenhum carro atual salvo ainda.' : 'Nenhum carro encontrado para este interessado.' }}
+          </div>
 
-      <div v-else class="space-y-4">
-        <article
-          v-for="item in localCars"
-          :key="item.id"
-          class="overflow-hidden rounded-2xl border shadow-sm transition-all"
-          :class="getCarStatus(item) === 'vendido' ? 'border-slate-300 bg-slate-100 grayscale' : 'border-slate-200 bg-white'"
-        >
+          <div v-else class="space-y-4">
+            <article
+              v-for="item in filteredLocalCars"
+              :key="item.id"
+              class="overflow-hidden rounded-2xl border shadow-sm transition-all"
+              :class="getCarStatus(item) === 'vendido' ? 'border-slate-300 bg-slate-100 grayscale' : 'border-slate-200 bg-white'"
+            >
           <div class="relative">
             <img
               v-if="getCarGalleryPhotos(item).length > 0"
@@ -542,6 +618,7 @@
             <div>
               <p class="text-base font-bold text-slate-900">{{ item.plate || 'SEM PLACA' }}</p>
               <p class="truncate text-sm text-slate-600">{{ item.brand }} {{ item.model }} {{ item.year || '' }}</p>
+              <p v-if="getInterestedDisplay(item)" class="truncate text-xs font-semibold text-indigo-700">Interessado: {{ getInterestedDisplay(item) }}</p>
             </div>
 
             <div class="grid grid-cols-2 gap-2 text-xs">
@@ -664,16 +741,19 @@
               </button>
             </div>
           </div>
-        </article>
-      </div>
+            </article>
+          </div>
+        </div>
+
+      </template>
     </section>
 
     <div
       v-if="galleryModalOpen && galleryModalPhotos.length > 0"
-      class="fixed inset-0 z-50 bg-slate-950/90 backdrop-blur-sm"
+      class="fixed inset-0 z-50 bg-slate-950/90 backdrop-blur-sm overflow-hidden"
       @click.self="closeGalleryModal"
     >
-      <div class="flex h-full flex-col">
+      <div class="flex h-full max-h-screen flex-col">
         <div class="flex items-center justify-between px-3 py-3 text-white">
           <p class="text-sm font-semibold">
             {{ galleryModalTitle }}
@@ -693,12 +773,12 @@
           </button>
         </div>
 
-        <div class="relative flex-1 px-3 pb-3">
-          <div class="flex h-full items-center justify-center rounded-xl bg-slate-900">
+        <div class="relative min-h-0 flex-1 px-3 pb-3">
+          <div class="flex h-full items-center justify-center overflow-hidden rounded-xl bg-slate-900">
             <img
               v-if="activeGalleryPhoto"
               :src="activeGalleryPhoto"
-              class="h-full w-full object-contain"
+              class="max-h-full max-w-full object-contain"
               alt="Foto da galeria"
             >
           </div>
@@ -752,9 +832,12 @@ import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useAuctionCarsApi } from '~/composables/useAuctionCarsApi'
 import { useIndexedAuctionCars } from '~/composables/useIndexedAuctionCars'
 import { calculateAuctionSummary, calculateSaleValue, calculateTotalCosts, normalizePlate } from '@core/shared/valuation'
-import type { AuctionCarRecord, AuctionCarStatus, CostItem, MountClass, PlateFipeQuotaInfo } from '@core/shared/types/auction'
+import type { AuctionCarInterestedPreset, AuctionCarRecord, AuctionCarStatus, CostItem, MountClass, PlateFipeQuotaInfo } from '@core/shared/types/auction'
+
 
 type CarStatus = 'em_andamento' | 'adquirido' | 'anunciado' | 'vendido'
+type InterestedPreset = AuctionCarInterestedPreset | ''
+type InterestedFilter = 'todos' | AuctionCarInterestedPreset
 
 type DraftState = {
   id: string
@@ -772,6 +855,8 @@ type DraftState = {
   costs: CostItem[]
   targetMarginPercent: number
   mountClass: MountClass
+  interestedPreset: InterestedPreset
+  interestedOther: string
   notes: string
   status: CarStatus
   createdAt: string | null
@@ -790,6 +875,12 @@ type OcrCandidateDetail = {
 }
 
 const AUTO_MOUNT_COST_ID = 'auto-mount-cost'
+const INTERESTED_PRESET_LABELS: Record<AuctionCarInterestedPreset, string> = {
+  ruan: 'Ruan',
+  vinicius: 'Vinicius',
+  jhow: 'Jhow',
+  outro: 'Outro',
+}
 
 const createId = () => {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
@@ -894,6 +985,8 @@ const createEmptyDraft = (): DraftState => ({
   costs: getDefaultCosts('pequena'),
   targetMarginPercent: 0,
   mountClass: 'pequena',
+  interestedPreset: '',
+  interestedOther: '',
   notes: '',
   status: 'em_andamento',
   createdAt: null,
@@ -904,7 +997,8 @@ const getCostValueByFipe = (fipe: number, ranges: [number, number][]) => {
   for (const [limit, value] of ranges) {
     if (fipe <= limit) return value
   }
-  return ranges[ranges.length - 1][1]
+  const lastRange = ranges[ranges.length - 1]
+  return lastRange ? lastRange[1] : 0
 }
 
 const costTypeOptions: CostOption[] = [
@@ -998,8 +1092,11 @@ const activeGalleryIndex = ref(0)
 const carGalleryIndexes = ref<Record<string, number>>({})
 const updatingStatusIds = ref<Record<string, boolean>>({})
 const isEditingCurrentCar = ref(false)
+const interestedFilter = ref<InterestedFilter>('todos')
+const isClientMounted = ref(false)
 
 const totalCosts = computed(() => calculateTotalCosts(draft.costs))
+const showCurrentCarsLoading = computed(() => import.meta.server || !isClientMounted.value)
 const displayPhotoSrc = computed(() => draft.plateCropDataUrl || draft.photoDataUrl || '')
 const isPlateFocusedPreview = computed(() => Boolean(draft.plateCropDataUrl))
 const canShowVehicleData = computed(() => plateCheckAttempted.value && !loadingLookup.value)
@@ -1039,6 +1136,16 @@ const projectedMarginPercent = computed(() => {
 
 const canSave = computed(() => {
   return Boolean(draft.plate || draft.brand || draft.model)
+})
+
+const filteredLocalCars = computed(() => {
+  const selectedFilter = interestedFilter.value
+  if (selectedFilter === 'todos') return localCars.value
+
+  return localCars.value.filter((record) => {
+    const preset = normalizeInterestedPreset(record.interestedPreset, record.interested)
+    return preset === selectedFilter
+  })
 })
 
 watch(triggerSavedCars, () => {
@@ -1105,6 +1212,66 @@ const normalizeCarStatus = (value: unknown): CarStatus => {
   return 'em_andamento'
 }
 
+const normalizeInterestedPreset = (
+  presetValue: unknown,
+  interestedValue?: string,
+): AuctionCarInterestedPreset | null => {
+  const preset = String(presetValue || '').trim().toLowerCase()
+  if (preset === 'ruan' || preset === 'vinicius' || preset === 'jhow' || preset === 'outro') {
+    return preset
+  }
+
+  const normalizedInterested = String(interestedValue || '')
+    .trim()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+
+  if (normalizedInterested === 'ruan') return 'ruan'
+  if (normalizedInterested === 'vinicius') return 'vinicius'
+  if (normalizedInterested === 'jhow') return 'jhow'
+  if (normalizedInterested) return 'outro'
+
+  return null
+}
+
+const resolveInterestedFromDraft = () => {
+  if (draft.interestedPreset === 'ruan' || draft.interestedPreset === 'vinicius' || draft.interestedPreset === 'jhow') {
+    return {
+      preset: draft.interestedPreset,
+      name: INTERESTED_PRESET_LABELS[draft.interestedPreset],
+    }
+  }
+
+  if (draft.interestedPreset === 'outro') {
+    const customName = draft.interestedOther.trim()
+    return {
+      preset: 'outro' as AuctionCarInterestedPreset,
+      name: customName,
+    }
+  }
+
+  return {
+    preset: null,
+    name: '',
+  }
+}
+
+const getInterestedDisplay = (record: AuctionCarRecord) => {
+  const customName = String(record.interested || '').trim()
+  const preset = normalizeInterestedPreset(record.interestedPreset, customName)
+
+  if (preset === 'ruan' || preset === 'vinicius' || preset === 'jhow') {
+    return INTERESTED_PRESET_LABELS[preset]
+  }
+
+  if (preset === 'outro') {
+    return customName || INTERESTED_PRESET_LABELS.outro
+  }
+
+  return ''
+}
+
 const getCarStatus = (record: AuctionCarRecord): CarStatus => normalizeCarStatus(record.status)
 const getCarStatusLabel = (record: AuctionCarRecord) => {
   const status = getCarStatus(record)
@@ -1163,7 +1330,7 @@ const normalizeBbox = (bbox: unknown): [number, number, number, number] | null =
   if (!Array.isArray(bbox) || bbox.length !== 4) return null
   const parsed = bbox.map((value) => Math.round(Number(value)))
   if (parsed.some((value) => !Number.isFinite(value))) return null
-  const [x1, y1, x2, y2] = parsed
+  const [x1, y1, x2, y2] = parsed as [number, number, number, number]
   if (x2 <= x1 || y2 <= y1) return null
   return [x1, y1, x2, y2]
 }
@@ -1833,7 +2000,9 @@ const addCostItem = () => {
   const existingIndex = draft.costs.findIndex((item) => item.label.trim().toLowerCase() === normalizedLabel)
 
   if (existingIndex >= 0) {
-    draft.costs[existingIndex] = { ...draft.costs[existingIndex], amount }
+    const existingCost = draft.costs[existingIndex]
+    if (!existingCost) return
+    draft.costs[existingIndex] = { ...existingCost, amount }
     setStatus('Custo atualizado.', 'ok')
   } else {
     draft.costs.push({ id: createId(), label, amount })
@@ -1892,6 +2061,7 @@ const resolveTargetMarginPercent = () => {
 const buildRecord = (): AuctionCarRecord => {
   const now = new Date().toISOString()
   const createdAt = draft.createdAt || now
+  const interested = resolveInterestedFromDraft()
 
   const costs = draft.costs.map((item) => ({
     id: item.id,
@@ -1918,6 +2088,8 @@ const buildRecord = (): AuctionCarRecord => {
     costs,
     targetMarginPercent,
     mountClass: draft.mountClass,
+    interested: interested.name,
+    interestedPreset: interested.preset,
     notes: draft.notes.trim(),
     status: draft.status,
     createdAt,
@@ -1965,6 +2137,8 @@ const cloneRecordForStorage = (record: AuctionCarRecord): AuctionCarRecord => {
     costs: normalizedCosts,
     targetMarginPercent: Math.max(0, Number(record.targetMarginPercent) || 0),
     mountClass: record.mountClass || 'pequena',
+    interested: String(record.interested || '').trim(),
+    interestedPreset: normalizeInterestedPreset(record.interestedPreset, record.interested),
     notes: String(record.notes || '').trim(),
     status: normalizeCarStatus(record.status),
     createdAt: record.createdAt || new Date().toISOString(),
@@ -1996,6 +2170,8 @@ const clearDraft = () => {
   draft.costs = nextDraft.costs.map((item) => ({ ...item }))
   draft.targetMarginPercent = nextDraft.targetMarginPercent
   draft.mountClass = nextDraft.mountClass
+  draft.interestedPreset = nextDraft.interestedPreset
+  draft.interestedOther = nextDraft.interestedOther
   draft.notes = nextDraft.notes
   draft.status = nextDraft.status
   draft.createdAt = nextDraft.createdAt
@@ -2051,6 +2227,9 @@ const editCurrentCar = (record: AuctionCarRecord) => {
   draft.km = typeof record.km === 'number' ? record.km : null
   draft.fipeValue = Number(record.fipeValue) || 0
   draft.mountClass = normalizedMountClass
+  const normalizedInterestedPreset = normalizeInterestedPreset(record.interestedPreset, record.interested)
+  draft.interestedPreset = normalizedInterestedPreset || ''
+  draft.interestedOther = normalizedInterestedPreset === 'outro' ? String(record.interested || '').trim() : ''
   draft.notes = record.notes || ''
   draft.status = normalizeCarStatus(record.status)
   draft.createdAt = record.createdAt || null
@@ -2111,7 +2290,7 @@ const updateCarStatus = async (record: AuctionCarRecord, status: AuctionCarStatu
 
     localCars.value = localCars.value.map((item) => (item.id === record.id ? updated : item))
     if (draft.id === record.id) {
-      draft.status = updated.status
+      draft.status = normalizeCarStatus(updated.status)
     }
 
     if (updated.status === 'adquirido') setStatus('Status alterado para adquirido.', 'ok')
@@ -2195,6 +2374,7 @@ const scrollToCurrentCars = () => {
 }
 
 onMounted(async () => {
+  isClientMounted.value = true
   await refreshPlateFipeQuota()
 
   if (!indexedDb.isSupported) {

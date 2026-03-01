@@ -38,7 +38,7 @@
       <slot />
     </main>
 
-    <PwaInstallModal />
+    <ClientOnly><PwaInstallModal /></ClientOnly>
   </div>
 </template>
 

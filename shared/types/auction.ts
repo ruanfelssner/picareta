@@ -17,6 +17,7 @@ export interface AuctionSummary {
 export type MountClass = 'sem_monta' | 'pequena' | 'media'
 
 export type AuctionCarStatus = 'em_andamento' | 'adquirido' | 'anunciado' | 'vendido'
+export type AuctionCarInterestedPreset = 'ruan' | 'vinicius' | 'jhow' | 'outro'
 
 export interface AuctionCarRecord {
   id: string
@@ -34,6 +35,8 @@ export interface AuctionCarRecord {
   costs: CostItem[]
   targetMarginPercent: number
   mountClass: MountClass
+  interested?: string
+  interestedPreset?: AuctionCarInterestedPreset | null
   notes: string
   status?: AuctionCarStatus
   createdAt: string

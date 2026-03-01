@@ -91,6 +91,8 @@ O projeto Picareta precisa permitir avaliacao rapida de carros de leilao no celu
 - RF-15.1: cada carro deve possuir status operacional minimo (`em_andamento`, `adquirido`, `anunciado`, `vendido`).
 - RF-15.2: a acao rapida na lista deve seguir a sequencia operacional: `em_andamento -> Adquirir -> Anunciar -> Vender -> Vendido -> Reativar -> em_andamento`.
 - RF-15.3: quando status for `vendido`, o card em "Carros atuais" deve usar visual em tons de cinza para indicar encerramento.
+- RF-15.4: no cadastro/edicao do carro, deve existir campo de interessado com opcoes rapidas `Ruan`, `Vinicius`, `Jhow` e `Outro` (texto livre).
+- RF-15.5: a lista de "Carros atuais" deve permitir filtro por interessado (`Todos`, `Ruan`, `Vinicius`, `Jhow`, `Outro`).
 
 ## 3. Requisitos nao funcionais
 
@@ -119,6 +121,12 @@ O projeto Picareta precisa permitir avaliacao rapida de carros de leilao no celu
 - RB-12: quando OCR apresentar baixa robustez (pouco suporte entre candidatos, decoder de beam em baixa confianca ou empate curto entre top-2), o sistema nao deve confirmar automaticamente a placa; deve exigir confirmacao manual.
 - RB-13: em leitura OCR baseada em `yolo_box`, o texto reconhecido deve passar por validacao de plausibilidade geometrica do bounding box (aspect ratio/cobertura minima no crop) antes de entrar no ranking final.
 - RB-14: deteccoes YOLO com geometria improvavel para placa (aspect ratio, area relativa e posicao no frame) devem ser descartadas antes da etapa de OCR para evitar capturar chassis/VIN no vidro.
+- RB-15: resposta OCR deve sair sempre no formato Mercosul `AAA0A00` (4 letras e 3 numeros). Se leitura vier no formato antigo `AAA0000`, converter automaticamente para Mercosul usando tabela fixa (`0->A`, `1->B`, ..., `9->J`) antes de retornar.
+- RB-16: em ambiguidade visual de letra central Mercosul (`...O..` vs `...D..`) com mesma base da placa e confianca proxima, o ranking deve priorizar `D` e manter confirmacao manual quando o empate persistir.
+- RB-17: quando OCR gerar apenas variante com `O` na letra central e nao houver candidato `D` equivalente, o backend deve injetar variante `D` no ranking para reduzir falso positivo recorrente de `D -> O`.
+- RB-18: em ambiguidades numericas posicionais recorrentes (`1<->4` no 4o caractere e `0<->9` no 6o caractere), o ranking deve priorizar a variante alternativa quando a diferenca de confianca for pequena; caso a robustez siga baixa, exigir confirmacao manual.
+- RB-19: tokens OCR curtos de texto institucional da placa (ex.: `BRASIL`/`MERCOSUL`) nao devem entrar como candidato de placa; se a etapa de contornos gerar apenas candidatos fracos, o fluxo deve obrigatoriamente continuar para fallback antes de decidir resultado.
+- RB-20: quando YOLO estiver indisponivel e nenhum candidato valido for encontrado em contorno/fallback padrao, o backend deve executar uma ultima varredura (`last_chance`) em regioes amplas com threshold mais permissivo para aumentar recall sem quebrar confirmacao manual.
 
 ## 5. Dependencias externas
 
