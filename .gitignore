@@ -25,3 +25,13 @@ logs
 data
 /scripts
 *.traineddata
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# YOLO/Ultralytics temporary outputs
+runs/
+
+# Keep trained production model tracked if needed
+!flask/models/license_plate.pt
