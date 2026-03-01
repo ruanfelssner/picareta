@@ -64,20 +64,24 @@ OCR_MIDDLE_O_D_PRIORITY_DELTA = 0.35
 OCR_MIDDLE_O_D_AMBIGUOUS_DELTA = 0.20
 OCR_MIDDLE_O_D_INJECT_CONF_BOOST = 0.018
 OCR_MIDDLE_O_D_INJECT_PENALTY_DELTA = 0.12
-OCR_LAST_7_TO_0_INJECT_CONF_BOOST = 0.014
+OCR_LAST_7_TO_0_INJECT_CONF_BOOST = 0.026
 OCR_LAST_7_TO_0_INJECT_PENALTY_DELTA = 0.10
 OCR_LAST_7_TO_0_INJECT_MAX_CONFIDENCE = 0.90
+OCR_LAST_7_TO_0_INJECT_MAX_RAW_OCR_CONFIDENCE = 0.58
 OCR_FOURTH_1_4_PRIORITY_DELTA = 0.08
+OCR_ENABLE_FOURTH_1_4_PRIORITY = False
 OCR_PENULTIMATE_0_9_PRIORITY_DELTA = 0.02
 OCR_PENULTIMATE_0_9_PRIORITY_MAX_PENALTY_GAP = 0.35
 OCR_PENULTIMATE_0_9_PRIORITY_MIN_TEMPLATE_DIFF = -0.004
+OCR_PENULTIMATE_0_9_LOW_PENALTY_CONF_GAP_MAX = 0.16
+OCR_PENULTIMATE_0_9_LOW_PENALTY_GAP_MIN = 0.45
 OCR_LOW_PENALTY_PRIORITY_CONF_GAP_MAX = 0.14
 OCR_LOW_PENALTY_PRIORITY_PENALTY_GAP_MIN = 0.75
 OCR_MAX_PROCESS_MS = 30_000
 OCR_MAX_VARIANTS = 3
 OCR_NO_YOLO_MAX_FALLBACK_REGIONS = 5
 OCR_NO_YOLO_FALLBACK_MAX_MS = 11_000
-OCR_NO_YOLO_FALLBACK_MAX_VARIANTS = 2
+OCR_NO_YOLO_FALLBACK_MAX_VARIANTS = 3
 OCR_MIN_TEXT_CONFIDENCE = 0.14
 OCR_CONTOUR_MAX_MS = 1700
 OCR_CONTOUR_MAX_REGIONS = 3
@@ -263,6 +267,14 @@ def _remaining_deadline_ms(deadline_at: Optional[float]) -> float:
     return max(0.0, (deadline_at - perf_counter()) * 1000.0)
 
 
+def _min_deadline(deadline_a: Optional[float], deadline_b: Optional[float]) -> Optional[float]:
+    if deadline_a is None:
+        return deadline_b
+    if deadline_b is None:
+        return deadline_a
+    return min(deadline_a, deadline_b)
+
+
 def _source_score_boost(source: str) -> float:
     if source.startswith("yolo"):
         return 0.10
@@ -273,6 +285,7 @@ def _source_score_boost(source: str) -> float:
         "center_mid": 0.01,
         "noyolo_top_center": 0.04,
         "noyolo_mid_center": 0.03,
+        "noyolo_lower_band": 0.04,
         "contour_plate_0": 0.10,
         "contour_plate_1": 0.09,
         "contour_plate_2": 0.08,
@@ -1530,11 +1543,14 @@ def _fallback_regions_no_yolo(np_img_rgb: np.ndarray) -> List[Tuple[str, np.ndar
     center_x1, center_x2 = w // 4, (w * 3) // 4
     half_y = h // 2
     top_two_thirds = (h * 2) // 3
+    lower_band_y1 = int(round(h * 0.45))
+    lower_band_y2 = int(round(h * 0.82))
 
     # Sem detector de placa, prioriza recortes menores no topo/centro para
     # manter detalhe de caracteres e reduzir custo do OCR.
     regions.append(("noyolo_mid_center", np_img_rgb[h // 4:top_two_thirds, center_x1:center_x2], (center_x1, h // 4)))
     regions.append(("center_bottom", np_img_rgb[h // 2:h, center_x1:center_x2], (center_x1, h // 2)))
+    regions.append(("noyolo_lower_band", np_img_rgb[lower_band_y1:lower_band_y2, 0:w], (0, lower_band_y1)))
     regions.append(("bottom_half", np_img_rgb[h // 2:h, 0:w], (0, h // 2)))
     regions.append(("noyolo_top_center", np_img_rgb[0:half_y, center_x1:center_x2], (center_x1, 0)))
     regions.append(("center_mid", np_img_rgb[h // 3:h, center_x1:center_x2], (center_x1, h // 3)))
@@ -2074,6 +2090,9 @@ def _prioritize_penultimate_digit_from_two(candidates: List[Dict]) -> Tuple[List
 
 
 def _prioritize_fourth_digit_four_over_one(candidates: List[Dict]) -> Tuple[List[Dict], bool]:
+    if not OCR_ENABLE_FOURTH_1_4_PRIORITY:
+        return candidates, False
+
     if len(candidates) < 2:
         return candidates, False
 
@@ -2143,6 +2162,43 @@ def _prioritize_penultimate_digit_nine_over_zero(candidates: List[Dict]) -> Tupl
         if current_template > 0 and preferred_template > 0:
             if (preferred_template - current_template) < OCR_PENULTIMATE_0_9_PRIORITY_MIN_TEMPLATE_DIFF:
                 continue
+
+        chosen = ordered.pop(preferred_idx)
+        ordered.insert(idx, chosen)
+        return ordered, True
+
+    return ordered, False
+
+
+def _prioritize_penultimate_digit_by_penalty(candidates: List[Dict]) -> Tuple[List[Dict], bool]:
+    if len(candidates) < 2:
+        return candidates, False
+
+    ordered = list(candidates)
+    for idx, item in enumerate(ordered):
+        plate = str(item.get("plate") or "")
+        if len(plate) != 7 or plate[5] not in {"0", "9"}:
+            continue
+
+        preferred_digit = "9" if plate[5] == "0" else "0"
+        preferred_plate = f"{plate[:5]}{preferred_digit}{plate[6:]}"
+        preferred_idx = next(
+            (index for index, candidate in enumerate(ordered) if str(candidate.get("plate") or "") == preferred_plate),
+            None,
+        )
+        if preferred_idx is None or preferred_idx < idx:
+            continue
+
+        current_conf = float(item.get("confidence", 0.0))
+        preferred_candidate = ordered[preferred_idx]
+        preferred_conf = float(preferred_candidate.get("confidence", 0.0))
+        if abs(current_conf - preferred_conf) > OCR_PENULTIMATE_0_9_LOW_PENALTY_CONF_GAP_MAX:
+            continue
+
+        current_penalty = float(item.get("normalization_penalty", 99.0))
+        preferred_penalty = float(preferred_candidate.get("normalization_penalty", 99.0))
+        if (current_penalty - preferred_penalty) < OCR_PENULTIMATE_0_9_LOW_PENALTY_GAP_MIN:
+            continue
 
         chosen = ordered.pop(preferred_idx)
         ordered.insert(idx, chosen)
@@ -2235,7 +2291,16 @@ def _inject_last_digit_zero_from_seven(candidates: List[Dict]) -> Tuple[List[Dic
     if not candidates:
         return candidates, False
 
-    existing = {str(item.get("plate") or "") for item in candidates}
+    best_conf_by_plate: Dict[str, float] = {}
+    for item in candidates:
+        plate = str(item.get("plate") or "")
+        if not plate:
+            continue
+        conf = float(item.get("confidence", 0.0))
+        prev = best_conf_by_plate.get(plate)
+        if prev is None or conf > prev:
+            best_conf_by_plate[plate] = conf
+
     injected: List[Dict] = []
 
     for item in candidates:
@@ -2251,16 +2316,26 @@ def _inject_last_digit_zero_from_seven(candidates: List[Dict]) -> Tuple[List[Dic
         if conf > OCR_LAST_7_TO_0_INJECT_MAX_CONFIDENCE:
             continue
 
+        decoder = str(item.get("ocr_decoder") or "")
+        raw_ocr_conf = float(item.get("ocr_confidence", 0.0))
+        if decoder != "beamsearch":
+            continue
+        if raw_ocr_conf > OCR_LAST_7_TO_0_INJECT_MAX_RAW_OCR_CONFIDENCE:
+            continue
+
         zero_plate = f"{plate[:6]}0"
-        if zero_plate in existing:
+
+        injected_conf = min(
+            1.0,
+            round(conf + OCR_LAST_7_TO_0_INJECT_CONF_BOOST, 4),
+        )
+        existing_zero_conf = best_conf_by_plate.get(zero_plate)
+        if existing_zero_conf is not None and existing_zero_conf >= (injected_conf - 0.004):
             continue
 
         clone = dict(item)
         clone["plate"] = zero_plate
-        clone["confidence"] = min(
-            1.0,
-            round(conf + OCR_LAST_7_TO_0_INJECT_CONF_BOOST, 4),
-        )
+        clone["confidence"] = injected_conf
         clone["normalization_penalty"] = round(
             float(item.get("normalization_penalty", 0.0)) + OCR_LAST_7_TO_0_INJECT_PENALTY_DELTA,
             3,
@@ -2268,7 +2343,7 @@ def _inject_last_digit_zero_from_seven(candidates: List[Dict]) -> Tuple[List[Dic
         clone["source"] = f"{source or 'unknown'}:70_injected"
         clone["last_digit_70_injected"] = True
         injected.append(clone)
-        existing.add(zero_plate)
+        best_conf_by_plate[zero_plate] = injected_conf
 
     if not injected:
         return candidates, False
@@ -2308,6 +2383,12 @@ def _prioritize_lower_penalty_same_shell(candidates: List[Dict]) -> Tuple[List[D
                 continue
             cand_shell = f"{cand_plate[:3]}:{cand_plate[5:]}"
             if cand_shell != shell:
+                continue
+
+            diff_positions = [pos for pos in range(7) if plate[pos] != cand_plate[pos]]
+            if len(diff_positions) != 1 or diff_positions[0] != 3:
+                continue
+            if {plate[3], cand_plate[3]} != {"1", "7"}:
                 continue
 
             cand_conf = float(cand.get("confidence", 0.0))
@@ -2443,13 +2524,17 @@ def recognize_plate(img: Image.Image, progress_cb=None) -> dict:
         fallback_started = perf_counter()
         pipeline.append("fallback_ocr_regions")
         regions = _fallback_regions_no_yolo(np_img_rgb) if yolo_model is None else _fallback_regions(np_img_rgb)
+        fallback_stage_deadline = None
+        if yolo_model is None and OCR_NO_YOLO_FALLBACK_MAX_MS > 0:
+            fallback_stage_deadline = fallback_started + (OCR_NO_YOLO_FALLBACK_MAX_MS / 1000.0)
+        fallback_deadline = _min_deadline(deadline_at, fallback_stage_deadline)
         if OCR_MAX_FALLBACK_REGIONS > 0:
             regions = regions[:OCR_MAX_FALLBACK_REGIONS]
         if yolo_model is None and OCR_NO_YOLO_MAX_FALLBACK_REGIONS > 0:
             regions = regions[:OCR_NO_YOLO_MAX_FALLBACK_REGIONS]
 
         for region_name, region_img, offset in regions:
-            if _is_deadline_reached(deadline_at):
+            if _is_deadline_reached(fallback_deadline):
                 timeout_reached = True
                 pipeline.append("deadline_reached:fallback_regions")
                 break
@@ -2464,7 +2549,7 @@ def recognize_plate(img: Image.Image, progress_cb=None) -> dict:
                 region_img,
                 source=region_name,
                 offset=offset,
-                deadline_at=deadline_at,
+                deadline_at=fallback_deadline,
                 max_variants=OCR_NO_YOLO_FALLBACK_MAX_VARIANTS if yolo_model is None else None,
             )
             candidates.extend(region_candidates)
@@ -2479,6 +2564,10 @@ def recognize_plate(img: Image.Image, progress_cb=None) -> dict:
         if not candidates and yolo_model is None and not _is_deadline_reached(deadline_at):
             last_started = perf_counter()
             pipeline.append("fallback_last_chance_no_yolo")
+            last_stage_deadline = None
+            if OCR_NO_YOLO_LAST_CHANCE_MAX_MS > 0:
+                last_stage_deadline = last_started + (OCR_NO_YOLO_LAST_CHANCE_MAX_MS / 1000.0)
+            last_deadline = _min_deadline(deadline_at, last_stage_deadline)
             c_x1 = proc_width // 4
             c_x2 = (proc_width * 3) // 4
             last_regions = [
@@ -2487,7 +2576,7 @@ def recognize_plate(img: Image.Image, progress_cb=None) -> dict:
                 ("last_top_half_center", np_img_rgb[0:proc_height // 2, c_x1:c_x2], (c_x1, 0)),
             ]
             for region_name, region_img, offset in last_regions:
-                if _is_deadline_reached(deadline_at):
+                if _is_deadline_reached(last_deadline):
                     timeout_reached = True
                     pipeline.append("deadline_reached:last_chance_regions")
                     break
@@ -2501,7 +2590,7 @@ def recognize_plate(img: Image.Image, progress_cb=None) -> dict:
                     region_img,
                     source=region_name,
                     offset=offset,
-                    deadline_at=deadline_at,
+                    deadline_at=last_deadline,
                     max_variants=OCR_LAST_CHANCE_MAX_VARIANTS,
                     min_text_confidence=OCR_LAST_CHANCE_MIN_TEXT_CONFIDENCE,
                 )
@@ -2582,6 +2671,9 @@ def recognize_plate(img: Image.Image, progress_cb=None) -> dict:
     deduped, penultimate_digit_0_9_priority_applied = _prioritize_penultimate_digit_nine_over_zero(deduped)
     if penultimate_digit_0_9_priority_applied:
         pipeline.append("prioritize_penultimate_digit_nine_over_zero")
+    deduped, penultimate_digit_0_9_by_penalty_applied = _prioritize_penultimate_digit_by_penalty(deduped)
+    if penultimate_digit_0_9_by_penalty_applied:
+        pipeline.append("prioritize_penultimate_digit_0_9_by_penalty")
     deduped, middle_letter_d_over_o_priority_applied = _prioritize_middle_letter_d_over_o(deduped)
     if middle_letter_d_over_o_priority_applied:
         pipeline.append("prioritize_middle_letter_d_over_o")
@@ -2627,6 +2719,9 @@ def recognize_plate(img: Image.Image, progress_cb=None) -> dict:
     deduped, penultimate_digit_0_9_priority_post_applied = _prioritize_penultimate_digit_nine_over_zero(deduped)
     if penultimate_digit_0_9_priority_post_applied:
         pipeline.append("prioritize_penultimate_digit_nine_over_zero_post_rerank")
+    deduped, penultimate_digit_0_9_by_penalty_post_applied = _prioritize_penultimate_digit_by_penalty(deduped)
+    if penultimate_digit_0_9_by_penalty_post_applied:
+        pipeline.append("prioritize_penultimate_digit_0_9_by_penalty_post_rerank")
     deduped, middle_letter_d_over_o_priority_post_applied = _prioritize_middle_letter_d_over_o(deduped)
     if middle_letter_d_over_o_priority_post_applied:
         pipeline.append("prioritize_middle_letter_d_over_o_post_rerank")
@@ -2678,6 +2773,7 @@ def recognize_plate(img: Image.Image, progress_cb=None) -> dict:
             "fourth_digit_1_4_priority_applied": fourth_digit_1_4_priority_applied,
             "penultimate_digit_priority_applied": penultimate_digit_priority_applied,
             "penultimate_digit_0_9_priority_applied": penultimate_digit_0_9_priority_applied,
+            "penultimate_digit_0_9_by_penalty_applied": penultimate_digit_0_9_by_penalty_applied,
             "middle_letter_d_over_o_priority_applied": middle_letter_d_over_o_priority_applied,
             "low_penalty_shell_priority_applied": low_penalty_shell_priority_applied,
             "middle_letter_d_injected": middle_letter_d_injected,
@@ -2689,6 +2785,7 @@ def recognize_plate(img: Image.Image, progress_cb=None) -> dict:
             "fourth_digit_1_4_priority_post_applied": fourth_digit_1_4_priority_post_applied,
             "penultimate_digit_priority_post_applied": penultimate_digit_priority_post_applied,
             "penultimate_digit_0_9_priority_post_applied": penultimate_digit_0_9_priority_post_applied,
+            "penultimate_digit_0_9_by_penalty_post_applied": penultimate_digit_0_9_by_penalty_post_applied,
             "middle_letter_d_over_o_priority_post_applied": middle_letter_d_over_o_priority_post_applied,
             "low_penalty_shell_priority_post_applied": low_penalty_shell_priority_post_applied,
             "middle_letter_d_injected_post": middle_letter_d_injected_post,

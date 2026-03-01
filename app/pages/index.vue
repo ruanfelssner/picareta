@@ -38,7 +38,7 @@
 
           <div
             v-if="isPlateFocusedPreview"
-            class="absolute left-2 top-2 rounded-lg bg-slate-950/80 px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-white"
+            class="absolute left-2 bottom-2 rounded-lg bg-slate-950/80 px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-white"
           >
             Foco na placa
           </div>
