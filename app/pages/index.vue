@@ -133,7 +133,6 @@
             class="hidden"
             type="file"
             accept="image/*"
-            capture="environment"
             @change="onPrimaryPhotoSelected"
           >
 
